@@ -2,12 +2,14 @@ from fastapi import HTTPException, status
 
 from app.core.security import PasswordService
 from app.models.user import User
-from app.repositories.user_repository import UserRepository
+from app.repositories.user_repository import (
+    DuplicateUserEmailError,
+    UserRepository,
+)
 from app.schemas.user import UserCreate
 
 
 class UserService:
-
     def __init__(
         self,
         repository: UserRepository,
@@ -16,42 +18,23 @@ class UserService:
         self.repository = repository
         self.password_service = password_service
 
-    async def create_user(
-        self,
-        data: UserCreate,
-    ) -> User:
-
-        existing_user = await self.repository.get_by_email(
-            data.email
-        )
-
-        if existing_user:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Email already registered",
-            )
+    async def create_user(self, data: UserCreate) -> User:
+        if await self.repository.get_by_email(data.email):
+            raise self._email_conflict()
 
         user = User(
             name=data.name,
             email=data.email,
-            hashed_password=self.password_service.hash(
-                data.password
-            ),
+            hashed_password=self.password_service.hash(data.password),
         )
+        try:
+            return await self.repository.create(user)
+        except DuplicateUserEmailError as exc:
+            raise self._email_conflict() from exc
 
-        return await self.repository.create(user)
-
-    async def get_user(
-        self,
-        user_id,
-    ) -> User:
-
-        user = await self.repository.get_by_id(user_id)
-
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found",
-            )
-
-        return user
+    @staticmethod
+    def _email_conflict() -> HTTPException:
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already registered",
+        )

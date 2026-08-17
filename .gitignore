@@ -4,8 +4,18 @@ __pycache__/
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# Virtual environments
-.venv
+# Virtual environments and local configuration
+.venv/
 .env
+
+# Local databases
+*.db
+*.db-shm
+*.db-wal
