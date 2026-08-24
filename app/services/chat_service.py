@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -16,12 +17,12 @@ class AgentExecutionError(RuntimeError):
 class ChatService:
     def __init__(
         self,
-        graph: CompiledStateGraph,
+        agent: CompiledStateGraph[Any, Any, Any, Any],
         *,
         timeout_seconds: float,
         recursion_limit: int,
     ):
-        self.graph = graph
+        self.agent = agent
         self.timeout_seconds = timeout_seconds
         self.recursion_limit = recursion_limit
 
@@ -34,7 +35,7 @@ class ChatService:
 
         try:
             async with asyncio.timeout(self.timeout_seconds):
-                result = await self.graph.ainvoke(
+                result = await self.agent.ainvoke(
                     {"messages": [HumanMessage(content=message)]},
                     config=config,
                 )

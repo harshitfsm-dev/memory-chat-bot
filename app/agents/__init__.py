@@ -1,5 +1,5 @@
-"""LangGraph agent workflows and tools."""
+"""LangChain agent runtime and tools."""
 
-from app.agents.graph import build_agent_graph
+from app.agents.agent import build_agent
 
-__all__ = ["build_agent_graph"]
+__all__ = ["build_agent"]

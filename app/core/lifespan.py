@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from app.agents import build_agent_graph
+from app.agents import build_agent
 from app.core.config import get_settings
 from app.core.security import JWTService, PasswordService
 from app.db.database import create_database
@@ -45,17 +45,17 @@ async def lifespan(app: FastAPI):
             str(settings.LANGGRAPH_CHECKPOINT_PATH)
         ) as checkpointer:
             await checkpointer.setup()
-            graph = build_agent_graph(
+            agent = build_agent(
                 model=model,
                 checkpointer=checkpointer,
                 history_max_tokens=settings.AGENT_HISTORY_MAX_TOKENS,
             )
             app.state.chat_service = ChatService(
-                graph,
+                agent,
                 timeout_seconds=settings.AGENT_TIMEOUT_SECONDS,
                 recursion_limit=settings.AGENT_RECURSION_LIMIT,
             )
-            logger.info("LangGraph agent workflow initialized")
+            logger.info("LangChain agent initialized")
             yield
     finally:
         await engine.dispose()
