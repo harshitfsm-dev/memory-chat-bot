@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.dependencies.auth import auth_dependency
 from app.dependencies.chat import get_chat_service
 from app.models.user import User
-from app.schemas.chat import ChatRequest, ChatResponse
+from app.schemas.chat import ChatRequest, ChatResponse, MessageResponse, ThreadResponse
 from app.services.chat_service import (
     AgentExecutionError,
     AgentTimeoutError,
@@ -52,3 +52,29 @@ async def chat(
         thread_id=result.thread_id,
         thread_title=result.thread_title,
     )
+
+
+@router.get("/threads", response_model=list[ThreadResponse])
+async def list_threads(
+    current_user: Annotated[User, Depends(auth_dependency)],
+    service: Annotated[ChatService, Depends(get_chat_service)],
+) -> list[ThreadResponse]:
+    return await service.get_user_threads(user_id=current_user.id)
+
+
+@router.get("/messages", response_model=list[MessageResponse])
+async def list_messages(
+    thread_id: str,
+    current_user: Annotated[User, Depends(auth_dependency)],
+    service: Annotated[ChatService, Depends(get_chat_service)],
+) -> list[MessageResponse]:
+    try:
+        return await service.get_thread_messages(
+            thread_id=thread_id,
+            user_id=current_user.id,
+        )
+    except ThreadNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Thread not found",
+        ) from exc

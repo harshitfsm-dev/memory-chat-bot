@@ -9,6 +9,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 from app.db.unit_of_work import UnitOfWork
+from app.models.chat_message import ChatMessage
 from app.models.chat_thread import ChatThread
 from app.repositories.chat_message_repository import ChatMessageRepository
 from app.repositories.chat_thread_repository import ChatThreadRepository
@@ -225,3 +226,18 @@ class ChatService:
         if not answer.strip():
             raise AgentExecutionError("Agent returned no answer text")
         return answer
+
+    async def get_user_threads(self, user_id: str) -> list[ChatThread]:
+        return await self.chat_thread_repo.get_all_threads(user_id=user_id)
+
+    async def get_thread_messages(
+        self,
+        thread_id: str,
+        user_id: str,
+    ) -> list[ChatMessage]:
+        # Thread ids arrive from the client, so prove ownership before
+        # returning a transcript — otherwise any user could read any thread.
+        thread = await self.chat_thread_repo.get_owned(thread_id, user_id)
+        if thread is None:
+            raise ThreadNotFoundError(thread_id)
+        return await self.chat_message_repo.get_all_messages(thread_id=thread_id)

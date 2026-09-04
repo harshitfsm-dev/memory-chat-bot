@@ -1,5 +1,6 @@
+from datetime import datetime
 import uuid
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ChatRequest(BaseModel):
@@ -28,3 +29,23 @@ class ChatResponse(BaseModel):
     answer: str
     thread_id: uuid.UUID
     thread_title: str
+
+
+class ThreadResponse(BaseModel):
+    id: uuid.UUID
+    title: str | None
+    summary: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MessageResponse(BaseModel):
+    id: uuid.UUID
+    thread_id: uuid.UUID
+    role: str
+    content: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
