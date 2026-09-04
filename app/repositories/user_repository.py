@@ -24,12 +24,22 @@ class UserRepository:
         return result.scalar_one_or_none()
 
     async def create(self, user: User) -> User:
+        """Stage a user and surface a duplicate email immediately.
+
+        Unlike the chat repositories this flushes, because the unique index on
+        `users.email` is only enforced once the INSERT reaches the database.
+        Flushing here keeps that translation in the layer that knows about the
+        constraint instead of leaking it into the caller's commit.
+
+        The caller still owns the commit.
+        """
         self.db.add(user)
         try:
-            await self.db.commit()
+            await self.db.flush()
         except IntegrityError as exc:
+            # Postgres aborts the transaction on a constraint violation, so it
+            # cannot be reused. Roll back before handing control back.
             await self.db.rollback()
             raise DuplicateUserEmailError from exc
 
-        await self.db.refresh(user)
         return user

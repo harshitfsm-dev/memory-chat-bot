@@ -1,10 +1,9 @@
-import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base
+from app.db.base import Base, new_uuid
 
 
 class ChatThread(Base):
@@ -13,7 +12,7 @@ class ChatThread(Base):
     id: Mapped[str] = mapped_column(
         String(36),
         primary_key=True,
-        default=lambda: str(uuid.uuid4()),
+        default=new_uuid,
     )
 
     user_id: Mapped[str] = mapped_column(

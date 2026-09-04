@@ -1,6 +1,7 @@
 from fastapi import HTTPException, status
 
 from app.core.security import PasswordService
+from app.db.unit_of_work import UnitOfWork
 from app.models.user import User
 from app.repositories.user_repository import (
     DuplicateUserEmailError,
@@ -14,9 +15,11 @@ class UserService:
         self,
         repository: UserRepository,
         password_service: PasswordService,
+        uow: UnitOfWork,
     ):
         self.repository = repository
         self.password_service = password_service
+        self.uow = uow
 
     async def create_user(self, data: UserCreate) -> User:
         if await self.repository.get_by_email(data.email):
@@ -28,9 +31,14 @@ class UserService:
             hashed_password=self.password_service.hash(data.password),
         )
         try:
-            return await self.repository.create(user)
+            # The repository flush above already proved the email is free; this
+            # commit is what makes the row durable.
+            created = await self.repository.create(user)
         except DuplicateUserEmailError as exc:
             raise self._email_conflict() from exc
+
+        await self.uow.commit()
+        return created
 
     @staticmethod
     def _email_conflict() -> HTTPException:

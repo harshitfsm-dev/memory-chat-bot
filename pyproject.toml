@@ -5,14 +5,13 @@ description = "Authenticated FastAPI chatbot backed by Ollama"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "aiosqlite>=0.22.1",
+    "asyncpg>=0.30.0",
     "alembic==1.19.1",
     "fastapi>=0.141.1",
     "greenlet>=3.5.5",
     "langchain-core==1.5.5",
     "langchain-ollama>=1.1.0",
     "langgraph==1.2.11",
-    "langgraph-checkpoint-sqlite==3.1.1",
     "pwdlib[argon2]>=0.3.1",
     "pydantic[email]>=2.13.4",
     "pydantic-settings>=2.15.0",

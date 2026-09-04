@@ -1,0 +1,30 @@
+services:
+  postgres:
+    # Pinned to 16 because it's already present locally; the registry was
+    # unreachable at setup time. Bump to 17 once a pull succeeds if desired.
+    image: postgres:16
+    container_name: chatbot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-chatbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chatbot}
+      POSTGRES_DB: ${POSTGRES_DB:-chatbot}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - chatbot_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Guard against the well-known "first connection during init" race:
+      # postgres briefly listens on a temp socket before it's really ready.
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-chatbot} -d ${POSTGRES_DB:-chatbot}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  chatbot_pgdata:

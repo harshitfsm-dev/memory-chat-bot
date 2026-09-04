@@ -8,11 +8,9 @@ from langchain.agents.middleware import (
     ModelRequest,
     ModelResponse,
     ToolErrorMiddleware,
-    ToolRetryMiddleware,
 )
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import trim_messages
-from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 
 from app.agents.tools import AGENT_TOOLS, handle_tool_error
@@ -24,9 +22,15 @@ Do not claim that a tool ran unless you received its result.
 If a tool fails, explain that you could not complete that part of the request.
 """
 
+TITLE_PROMPT = """You name chat conversations.
+Summarise the user's message as a title of at most six words.
+Reply with the title only: no quotes, no prefix, no trailing punctuation.
+Never answer the message itself.
+"""
+
 
 class TrimHistoryMiddleware(AgentMiddleware):
-    """Cap the history sent to the model without discarding checkpointed state."""
+    """Cap messages sent to the model during a single agent run."""
 
     def __init__(self, max_tokens: int):
         super().__init__()
@@ -60,34 +64,27 @@ class TrimHistoryMiddleware(AgentMiddleware):
         return await handler(self._trim(request))
 
 
-retry_middleware = ToolRetryMiddleware(
-    max_retries=5,
-    retry_on=lambda e: True,  # Transient exceptions to intercept
-    on_failure="continue",  # Sends the error back to the LLM as an observation
-    initial_delay=0.5,
-    backoff_factor=0.0,  # Constant delay instead of exponential
-    jitter=False,
-)
-
-
 def build_agent(
     model: BaseChatModel,
-    checkpointer: BaseCheckpointSaver,
     history_max_tokens: int,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
-    """Create the single-agent chat runtime.
-
-    A chatbot only needs one model/tool loop, so `create_agent` replaces the
-    hand-rolled `StateGraph`: same ReAct behaviour, less wiring to maintain.
-    """
+    """Create the stateless model/tool loop used for chat responses."""
     return create_agent(
         model=model,
         tools=AGENT_TOOLS,
         system_prompt=SYSTEM_PROMPT,
         middleware=[
-            # TrimHistoryMiddleware(history_max_tokens),
+            TrimHistoryMiddleware(history_max_tokens),
             ToolErrorMiddleware(on_error=handle_tool_error),
-            retry_middleware,
         ],
-        checkpointer=checkpointer,
+    )
+
+
+def build_title_agent(
+    model: BaseChatModel,
+) -> CompiledStateGraph[Any, Any, Any, Any]:
+    """Create the lightweight runtime for short, one-shot side tasks."""
+    return create_agent(
+        model=model,
+        system_prompt=TITLE_PROMPT,
     )

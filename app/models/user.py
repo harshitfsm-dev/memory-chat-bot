@@ -1,10 +1,9 @@
-import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db.base import Base
+from app.db.base import Base, new_uuid
 
 
 def utc_now() -> datetime:
@@ -17,7 +16,7 @@ class User(Base):
     id: Mapped[str] = mapped_column(
         String(36),
         primary_key=True,
-        default=lambda: str(uuid.uuid4()),
+        default=new_uuid,
     )
     email: Mapped[str] = mapped_column(
         String(255),

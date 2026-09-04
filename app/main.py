@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from app.core.exception_handlers import register_exception_handlers
 from app.core.lifespan import lifespan
 from app.routers.auth_router import router as auth_router
 from app.routers.chat_router import router as chat_router
@@ -12,6 +13,8 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+register_exception_handlers(app)
 
 app.include_router(user_router)
 app.include_router(auth_router)
