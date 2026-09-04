@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,6 +42,23 @@ class ChatResult:
     answer: str
     thread_id: str
     thread_title: str
+
+
+@dataclass(frozen=True)
+class StreamChunk:
+    """One event in a streaming chat response.
+
+    `type` is one of:
+      - "meta":  thread resolved; `thread_id` / `thread_title` are set.
+      - "delta": a token chunk; `text` holds the incremental text.
+      - "done":  generation finished and persisted; `text` holds the full answer.
+      - "error": generation failed mid-stream; `text` holds a safe message.
+    """
+
+    type: str
+    text: str = ""
+    thread_id: str | None = None
+    thread_title: str | None = None
 
 
 class ChatService:
@@ -161,6 +179,150 @@ class ChatService:
             thread_id=thread.id,
             thread_title=thread.title or self._fallback_title(message),
         )
+
+    async def stream_chat(
+        self,
+        message: str,
+        user_id: str,
+        thread_id: str | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Answer one message as a stream of token chunks and persist the turn.
+
+        Mirrors `chat` but streams the model output. The transaction discipline
+        is identical and deliberate: the user's turn is committed *before*
+        inference so the pooled connection is released during the slow model
+        call, and the assistant's turn is committed *after* the stream drains.
+
+        Ownership and persistence failures that occur before the first token
+        are raised (so the transport can still answer with an HTTP error). Once
+        tokens start flowing the HTTP status is already sent, so a mid-stream
+        failure is surfaced as a terminal "error" chunk instead.
+        """
+        thread = await self._resolve_thread(
+            message=message,
+            user_id=user_id,
+            thread_id=thread_id,
+        )
+        run_id = str(uuid.uuid4())
+        config: RunnableConfig = {
+            "recursion_limit": self.recursion_limit,
+            "run_name": "chat-response-stream",
+            "tags": ["chat", "stream"],
+            "metadata": {
+                "run_id": run_id,
+                "thread_id": thread.id,
+                "user_id": user_id,
+            },
+        }
+
+        # Commit the user's turn (and any new thread) before inference, exactly
+        # as the non-streaming path does. A failure here propagates before the
+        # stream opens, so the transport can still return an HTTP error.
+        self.chat_message_repo.create(
+            thread_id=thread.id,
+            role=ROLE_USER,
+            content=message,
+        )
+        await self.uow.commit()
+
+        # Announce the resolved thread before tokens so the client can attach
+        # them to the right (possibly brand-new) thread.
+        yield StreamChunk(
+            type="meta",
+            thread_id=thread.id,
+            thread_title=thread.title or self._fallback_title(message),
+        )
+
+        parts: list[str] = []
+        try:
+            async with asyncio.timeout(self.timeout_seconds):
+                async with self.agent_semaphore:
+                    async for delta in self._stream_tokens(message, config):
+                        parts.append(delta)
+                        yield StreamChunk(type="delta", text=delta)
+        except TimeoutError:
+            logger.warning(
+                "Agent stream timed out: run=%s thread=%s user=%s",
+                run_id,
+                thread.id,
+                user_id,
+            )
+            yield StreamChunk(type="error", text="Agent generation timed out")
+            return
+        except Exception:
+            logger.exception(
+                "Agent stream failed: run=%s thread=%s user=%s",
+                run_id,
+                thread.id,
+                user_id,
+            )
+            yield StreamChunk(type="error", text="Agent generation failed")
+            return
+
+        answer = "".join(parts).strip()
+        if not answer:
+            logger.warning(
+                "Agent stream produced no text: run=%s thread=%s user=%s",
+                run_id,
+                thread.id,
+                user_id,
+            )
+            yield StreamChunk(type="error", text="Agent generation failed")
+            return
+
+        # Persist the assistant turn after the stream drains. If this fails the
+        # client already has the text; log and still close with an error chunk
+        # so the client knows the turn was not saved.
+        try:
+            self.chat_message_repo.create(
+                thread_id=thread.id,
+                role=ROLE_ASSISTANT,
+                content=answer,
+            )
+            await self.uow.commit()
+        except Exception:
+            logger.exception(
+                "Failed to persist streamed answer: run=%s thread=%s user=%s",
+                run_id,
+                thread.id,
+                user_id,
+            )
+            yield StreamChunk(type="error", text="Response was not saved")
+            return
+
+        logger.info(
+            "Agent stream completed: run=%s thread=%s user=%s",
+            run_id,
+            thread.id,
+            user_id,
+        )
+        yield StreamChunk(type="done", text=answer)
+
+    async def _stream_tokens(
+        self,
+        message: str,
+        config: RunnableConfig,
+    ) -> AsyncIterator[str]:
+        """Yield model token text from the agent's streamed events.
+
+        Uses LangChain's event stream and keeps only chat-model token chunks,
+        so tool-call machinery and intermediate graph state never reach the
+        client.
+        """
+        async for event in self.agent.astream_events(
+            {"messages": [HumanMessage(content=message)]},
+            config=config,
+            version="v2",
+        ):
+            if event.get("event") != "on_chat_model_stream":
+                continue
+            chunk = event.get("data", {}).get("chunk")
+            text = getattr(chunk, "text", None)
+            # `text` can be a str or (older) a method; normalize and skip empties.
+            if callable(text):
+                text = text()
+            if isinstance(text, str) and text:
+                yield text
 
     async def _resolve_thread(
         self,

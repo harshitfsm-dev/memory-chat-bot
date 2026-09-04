@@ -27,13 +27,6 @@ export interface LoginResponse {
   token_type: string;
 }
 
-export interface CreateConversationPayload {
-  model: ModelId;
-  /** Optional client-generated id so the UI can navigate optimistically. */
-  id?: string;
-  title?: string;
-}
-
 export type ConversationPatch = Partial<Pick<Conversation, "title" | "archived" | "model">>;
 
 export interface MessageFeedbackPayload {
@@ -49,6 +42,11 @@ export interface CompletionSettings {
 
 export interface StreamCompletionPayload {
   conversationId: string;
+  /**
+   * Backend thread id to continue, or null to start a new thread. The backend
+   * owns thread creation and returns the real id via the `meta` event.
+   */
+  threadId: string | null;
   prompt: string;
   history: ChatMessage[];
   model: ModelId;
@@ -57,6 +55,12 @@ export interface StreamCompletionPayload {
 }
 
 export interface StreamCompletionCallbacks {
+  /**
+   * Fires once when the backend resolves the thread, before any tokens. For a
+   * new chat this carries the server-generated thread id and title so the
+   * client can adopt them.
+   */
+  onMeta?: (threadId: string, threadTitle: string) => void;
   onDelta: (fullText: string) => void;
   onFinish: (fullText: string, aborted: boolean) => void;
 }

@@ -12,14 +12,11 @@ export { signOut } from "./auth/sign-out";
 export { getSettings } from "./settings/get-settings";
 export { saveSettings } from "./settings/save-settings";
 
-export { listConversations } from "./conversations/list-conversations";
-export { createConversation } from "./conversations/create-conversation";
 export { updateConversation } from "./conversations/update-conversation";
 export { deleteConversation } from "./conversations/delete-conversation";
-export { persistConversations } from "./conversations/persist-conversations";
 
 export { streamCompletion } from "./messages/stream-completion";
-export { generateTitle, optimisticTitle } from "./messages/generate-title";
+export { optimisticTitle } from "./messages/generate-title";
 export { setMessageFeedback } from "./messages/set-message-feedback";
 
 export { uploadAttachment, MAX_UPLOAD_SIZE } from "./files/upload-attachment";

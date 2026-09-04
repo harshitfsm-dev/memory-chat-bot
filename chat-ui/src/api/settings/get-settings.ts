@@ -1,5 +1,5 @@
 import { MOCK_LATENCY, mockResponse } from "@/api/http";
-import { DEFAULT_SETTINGS } from "@/api/mock/mock-data";
+import { DEFAULT_SETTINGS } from "@/lib/defaults";
 import { STORAGE_KEYS, readLocal } from "@/lib/storage";
 import type { Settings } from "@/lib/types";
 

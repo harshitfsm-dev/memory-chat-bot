@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
+import { setUnauthorizedHandler } from "@/api/http";
 import type { Session } from "@/api/types";
 import type { Settings } from "@/lib/types";
 import { useAuthSlice } from "./use-auth-slice";
@@ -26,10 +27,17 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const settingsSlice = useSettingsSlice(hydrated);
   const conversationsSlice = useConversationsSlice(hydrated, settingsSlice.settings);
 
-  const { loadSession } = authSlice;
+  const { loadSession, handleUnauthorized } = authSlice;
   const { loadSettings } = settingsSlice;
   const { loadConversations, clearConversations } = conversationsSlice;
   const signedIn = authSlice.auth.signedIn;
+
+  /* Route any backend 401 (expired/invalid token) to the signed-out state; the
+     redirect effect in the chat view then sends the user to /auth. */
+  useEffect(() => {
+    setUnauthorizedHandler(handleUnauthorized);
+    return () => setUnauthorizedHandler(null);
+  }, [handleUnauthorized]);
 
   /* Hydrate local state (session + settings) once on mount. Threads are NOT
      loaded here — they require auth and must not be fetched on the login page. */

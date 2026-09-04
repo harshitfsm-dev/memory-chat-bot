@@ -41,6 +41,7 @@ export function ChatView({ chatId }: { chatId: string | null }) {
     setFeedback,
     loadMessages,
     loadingMessages,
+    threadRemap,
   } = useApp();
 
   const [collapsed, setCollapsed] = useState(false);
@@ -66,13 +67,26 @@ export function ChatView({ chatId }: { chatId: string | null }) {
   }, [hydrated, auth.signedIn, navigate]);
 
   useEffect(() => {
-    if (hydrated && chatId && !conversation) navigate({ to: "/", replace: true });
-  }, [hydrated, chatId, conversation, navigate]);
+    // Skip the redirect while a new chat is swapping its local id for the
+    // backend id — the URL is about to be rewritten to the real thread.
+    const remapping = Boolean(threadRemap && chatId === threadRemap.from);
+    if (hydrated && chatId && !conversation && !remapping) {
+      navigate({ to: "/", replace: true });
+    }
+  }, [hydrated, chatId, conversation, threadRemap, navigate]);
 
   /* Lazily load the transcript the first time a thread is opened. */
   useEffect(() => {
     if (hydrated && chatId && conversation) void loadMessages(chatId);
   }, [hydrated, chatId, conversation, loadMessages]);
+
+  /* When a new chat adopts its backend thread id mid-stream, swap the URL from
+     the temporary local id to the real one so refresh/deep-link works. */
+  useEffect(() => {
+    if (threadRemap && chatId === threadRemap.from) {
+      void navigate({ to: "/c/$chatId", params: { chatId: threadRemap.to }, replace: true });
+    }
+  }, [threadRemap, chatId, navigate]);
 
   useEffect(() => {
     setDraft("");

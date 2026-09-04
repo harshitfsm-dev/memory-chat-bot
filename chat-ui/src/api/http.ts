@@ -57,6 +57,27 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Global 401 handler. The app registers a callback (once) that signs the user
+ * out and routes to the login page. Kept as a plain callback so the transport
+ * layer stays framework-agnostic and never imports the router or store.
+ */
+let unauthorizedHandler: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  unauthorizedHandler = handler;
+}
+
+/**
+ * Signal that a request was rejected as unauthenticated. Clears the stale token
+ * and notifies the app so it can redirect to login. Safe to call from any
+ * transport (the JSON client and the SSE stream both route 401s here).
+ */
+export function notifyUnauthorized(): void {
+  clearToken();
+  unauthorizedHandler?.();
+}
+
 /** Wraps a mock resolver so endpoints keep a Promise-based, async-only contract. */
 export async function mockResponse<T>(
   resolve: () => T | Promise<T>,
@@ -138,9 +159,10 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const payload = await parseBody(response);
 
   if (!response.ok) {
-    // A 401 means the stored token is no longer valid — drop it so the app
-    // falls back to the signed-out state on next hydration.
-    if (response.status === 401 && !skipAuth) clearToken();
+    // A 401 means the stored token is no longer valid — drop it and redirect
+    // to login. `skipAuth` requests (e.g. the login call itself) are exempt so
+    // a bad-credentials 401 doesn't trigger a redirect loop.
+    if (response.status === 401 && !skipAuth) notifyUnauthorized();
     throw new ApiError(
       messageFromBody(payload, `Request failed with status ${response.status}`),
       response.status,

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-  createConversation as createConversationRequest,
   deleteConversation as deleteConversationRequest,
   listMessages,
   listThreads,
@@ -26,6 +25,11 @@ export interface ConversationsSlice {
   streaming: StreamState | null;
   /** Thread ids whose transcript is currently being fetched. */
   loadingMessages: ReadonlySet<string>;
+  /**
+   * Set when a locally-created chat adopts its backend thread id, so the view
+   * can swap the URL from the temporary id to the real one.
+   */
+  threadRemap: { from: string; to: string } | null;
   loadConversations: () => Promise<void>;
   loadMessages: (conversationId: string) => Promise<void>;
   clearConversations: () => void;
@@ -46,10 +50,13 @@ export function useConversationsSlice(hydrated: boolean, settings: Settings): Co
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [streaming, setStreaming] = useState<StreamState | null>(null);
   const [loadingMessages, setLoadingMessages] = useState<ReadonlySet<string>>(new Set());
+  const [threadRemap, setThreadRemap] = useState<{ from: string; to: string } | null>(null);
   const streamRef = useRef<CompletionStream | null>(null);
   const conversationsRef = useRef<Conversation[]>([]);
   /** Thread ids whose transcript has already been fetched from the backend. */
   const loadedMessagesRef = useRef<Set<string>>(new Set());
+  /** Ids known to exist on the backend (loaded threads + reconciled new chats). */
+  const serverThreadsRef = useRef<Set<string>>(new Set());
 
   conversationsRef.current = conversations;
 
@@ -58,6 +65,7 @@ export function useConversationsSlice(hydrated: boolean, settings: Settings): Co
       const threads = await listThreads();
       setConversations(threads.map(threadToConversation));
       loadedMessagesRef.current = new Set();
+      serverThreadsRef.current = new Set(threads.map((thread) => thread.id));
     } catch {
       // Hydration runs before auth is guaranteed; a signed-out load returns
       // 401. Fail soft to an empty list so the app still finishes hydrating —
@@ -106,8 +114,10 @@ export function useConversationsSlice(hydrated: boolean, settings: Settings): Co
     streamRef.current?.stop();
     streamRef.current = null;
     loadedMessagesRef.current = new Set();
+    serverThreadsRef.current = new Set();
     setStreaming(null);
     setLoadingMessages(new Set());
+    setThreadRemap(null);
     setConversations([]);
   }, []);
 
@@ -137,9 +147,10 @@ export function useConversationsSlice(hydrated: boolean, settings: Settings): Co
         ...prev,
       ]);
       // Locally created: its transcript lives in memory, so never try to fetch
-      // one from the backend (the id isn't a server thread id).
+      // one from the backend (the id isn't a server thread id yet). The backend
+      // creates the real thread lazily on the first streamed message and hands
+      // back its id via the stream's `meta` event.
       loadedMessagesRef.current.add(id);
-      void createConversationRequest({ id, model: model ?? settings.defaultModel });
       return id;
     },
     [settings.defaultModel],
@@ -215,17 +226,49 @@ export function useConversationsSlice(hydrated: boolean, settings: Settings): Co
         conversationsRef.current.find((item) => item.id === conversationId)?.model ??
         settings.defaultModel;
 
+      // The id can change mid-stream: a brand-new local chat adopts the
+      // backend thread id from the `meta` event. Track it so later patches and
+      // the streaming marker follow the conversation across the rename.
+      let activeId = conversationId;
+      const threadId = serverThreadsRef.current.has(conversationId) ? conversationId : null;
+
       streamRef.current = streamCompletion(
         {
           conversationId,
+          threadId,
           prompt,
           history,
           model,
           settings: { responseStyle: settings.responseStyle, tone: settings.tone },
         },
         {
+          onMeta: (backendId, title) => {
+            serverThreadsRef.current.add(backendId);
+            if (backendId === activeId) {
+              if (title) patch(activeId, (c) => ({ ...c, title }));
+              return;
+            }
+            // Adopt the backend id in place of the temporary local id.
+            const fromId = activeId;
+            if (loadedMessagesRef.current.has(fromId)) {
+              loadedMessagesRef.current.delete(fromId);
+            }
+            loadedMessagesRef.current.add(backendId);
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === fromId ? { ...c, id: backendId, title: title || c.title } : c,
+              ),
+            );
+            setStreaming((prev) =>
+              prev && prev.conversationId === fromId
+                ? { ...prev, conversationId: backendId }
+                : prev,
+            );
+            activeId = backendId;
+            setThreadRemap({ from: fromId, to: backendId });
+          },
           onDelta: (text) => {
-            patch(conversationId, (conversation) => ({
+            patch(activeId, (conversation) => ({
               ...conversation,
               messages: conversation.messages.map((message) =>
                 message.id === assistantId ? { ...message, content: text } : message,
@@ -235,7 +278,7 @@ export function useConversationsSlice(hydrated: boolean, settings: Settings): Co
           onFinish: (text, aborted) => {
             streamRef.current = null;
             setStreaming(null);
-            patch(conversationId, (conversation) => ({
+            patch(activeId, (conversation) => ({
               ...conversation,
               updatedAt: new Date().toISOString(),
               messages: conversation.messages.map((message) =>
@@ -272,6 +315,7 @@ export function useConversationsSlice(hydrated: boolean, settings: Settings): Co
       const existing = conversationsRef.current.find((item) => item.id === conversationId);
       const history = existing?.messages ?? [];
       const isFirst = history.length === 0;
+      // Optimistic local title until the backend returns the real one via meta.
       const title = isFirst
         ? optimisticTitle(clean || attachments?.[0]?.name || "New chat")
         : existing?.title;
@@ -282,7 +326,6 @@ export function useConversationsSlice(hydrated: boolean, settings: Settings): Co
         updatedAt: userMessage.createdAt,
         messages: [...conversation.messages, userMessage],
       }));
-      if (isFirst && title) void updateConversation(conversationId, { title });
 
       runStream(conversationId, clean, history);
     },
@@ -313,6 +356,7 @@ export function useConversationsSlice(hydrated: boolean, settings: Settings): Co
     conversations,
     streaming,
     loadingMessages,
+    threadRemap,
     loadConversations,
     loadMessages,
     clearConversations,

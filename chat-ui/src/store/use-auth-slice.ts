@@ -10,6 +10,8 @@ export interface AuthSlice {
   loadSession: () => Promise<void>;
   logIn: (email: string, password: string) => Promise<void>;
   signOut: () => void;
+  /** Flip to signed-out after a 401. Token is already cleared by the transport. */
+  handleUnauthorized: () => void;
 }
 
 export function useAuthSlice(): AuthSlice {
@@ -41,5 +43,9 @@ export function useAuthSlice(): AuthSlice {
     void signOutRequest();
   }, []);
 
-  return { auth, loadSession, logIn, signOut };
+  const handleUnauthorized = useCallback(() => {
+    setAuth((prev) => (prev.signedIn ? { signedIn: false, user: prev.user } : prev));
+  }, []);
+
+  return { auth, loadSession, logIn, signOut, handleUnauthorized };
 }
