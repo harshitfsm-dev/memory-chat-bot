@@ -74,3 +74,27 @@ export interface UploadHandle {
 }
 
 export type SettingsPayload = Settings;
+
+/**
+ * Raw thread record returned by `GET /chat/threads`.
+ * Field names mirror the backend (snake_case) exactly.
+ */
+export interface ThreadResponse {
+  id: string;
+  title: string | null;
+  summary: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Raw message record returned by `GET /chat/messages`.
+ * Field names mirror the backend (snake_case) exactly.
+ */
+export interface MessageResponse {
+  id: string;
+  thread_id: string;
+  role: string;
+  content: string;
+  created_at: string;
+}

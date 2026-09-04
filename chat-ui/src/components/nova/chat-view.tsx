@@ -8,6 +8,7 @@ import { ChatEmptyState } from "@/components/nova/chat/chat-empty-state";
 import { ChatNavigation } from "@/components/nova/chat/chat-navigation";
 import { ChatSkeleton } from "@/components/nova/chat/chat-skeleton";
 import { ChatTranscript } from "@/components/nova/chat/chat-transcript";
+import { ChatTranscriptSkeleton } from "@/components/nova/chat/chat-transcript-skeleton";
 import { RenameConversationDialog } from "@/components/nova/chat/rename-conversation-dialog";
 import { ConfirmDialog } from "@/components/nova/confirm-dialog";
 import { SettingsDialog } from "@/components/nova/settings-dialog";
@@ -38,6 +39,8 @@ export function ChatView({ chatId }: { chatId: string | null }) {
     stopStreaming,
     streaming,
     setFeedback,
+    loadMessages,
+    loadingMessages,
   } = useApp();
 
   const [collapsed, setCollapsed] = useState(false);
@@ -55,6 +58,7 @@ export function ChatView({ chatId }: { chatId: string | null }) {
   const model: ModelId = conversation?.model ?? settings.defaultModel;
   const isStreaming = Boolean(conversation && streaming?.conversationId === conversation.id);
   const messages = conversation?.messages ?? [];
+  const isLoadingMessages = Boolean(chatId && loadingMessages.has(chatId));
 
   /* ------------------------------------------------------------ redirects */
   useEffect(() => {
@@ -64,6 +68,11 @@ export function ChatView({ chatId }: { chatId: string | null }) {
   useEffect(() => {
     if (hydrated && chatId && !conversation) navigate({ to: "/", replace: true });
   }, [hydrated, chatId, conversation, navigate]);
+
+  /* Lazily load the transcript the first time a thread is opened. */
+  useEffect(() => {
+    if (hydrated && chatId && conversation) void loadMessages(chatId);
+  }, [hydrated, chatId, conversation, loadMessages]);
 
   useEffect(() => {
     setDraft("");
@@ -144,9 +153,7 @@ export function ChatView({ chatId }: { chatId: string | null }) {
         onDelete={setDeleteTarget}
         onArchive={handleArchive}
         onOpenSettings={() => setSettingsOpen(true)}
-        onToggleTheme={() =>
-          updateSettings({ theme: resolvedTheme === "dark" ? "light" : "dark" })
-        }
+        onToggleTheme={() => updateSettings({ theme: resolvedTheme === "dark" ? "light" : "dark" })}
         onSignOut={() => {
           signOut();
           void navigate({ to: "/auth", replace: true });
@@ -167,7 +174,9 @@ export function ChatView({ chatId }: { chatId: string | null }) {
           onModelChange={handleModelChange}
         />
 
-        {messages.length === 0 ? (
+        {messages.length === 0 && isLoadingMessages ? (
+          <ChatTranscriptSkeleton />
+        ) : messages.length === 0 ? (
           <ChatEmptyState userName={auth.user.name} onSelectPrompt={(prompt) => submit(prompt)} />
         ) : (
           <ChatTranscript

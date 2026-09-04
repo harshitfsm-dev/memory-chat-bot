@@ -3,11 +3,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createConversation as createConversationRequest,
   deleteConversation as deleteConversationRequest,
-  listConversations,
+  listMessages,
+  listThreads,
+  messageToChatMessage,
   optimisticTitle,
-  persistConversations,
   setMessageFeedback,
   streamCompletion,
+  threadToConversation,
   updateConversation,
 } from "@/api";
 import type { CompletionStream } from "@/api/types";
@@ -22,7 +24,11 @@ export interface StreamState {
 export interface ConversationsSlice {
   conversations: Conversation[];
   streaming: StreamState | null;
+  /** Thread ids whose transcript is currently being fetched. */
+  loadingMessages: ReadonlySet<string>;
   loadConversations: () => Promise<void>;
+  loadMessages: (conversationId: string) => Promise<void>;
+  clearConversations: () => void;
   getConversation: (id: string) => Conversation | undefined;
   createConversation: (model?: ModelId) => string;
   renameConversation: (id: string, title: string) => void;
@@ -39,30 +45,75 @@ export interface ConversationsSlice {
 export function useConversationsSlice(hydrated: boolean, settings: Settings): ConversationsSlice {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [streaming, setStreaming] = useState<StreamState | null>(null);
+  const [loadingMessages, setLoadingMessages] = useState<ReadonlySet<string>>(new Set());
   const streamRef = useRef<CompletionStream | null>(null);
   const conversationsRef = useRef<Conversation[]>([]);
+  /** Thread ids whose transcript has already been fetched from the backend. */
+  const loadedMessagesRef = useRef<Set<string>>(new Set());
 
   conversationsRef.current = conversations;
 
   const loadConversations = useCallback(async () => {
-    setConversations(await listConversations());
+    try {
+      const threads = await listThreads();
+      setConversations(threads.map(threadToConversation));
+      loadedMessagesRef.current = new Set();
+    } catch {
+      // Hydration runs before auth is guaranteed; a signed-out load returns
+      // 401. Fail soft to an empty list so the app still finishes hydrating —
+      // the /auth redirect handles the signed-out case.
+      setConversations([]);
+    }
   }, []);
 
-  /* mock durability — real API persists inside each mutation endpoint */
-  useEffect(() => {
-    if (!hydrated) return;
-    void persistConversations(
-      conversations,
-      settings.saveHistory && settings.chatHistoryEnabled,
-    );
-  }, [conversations, hydrated, settings.saveHistory, settings.chatHistoryEnabled]);
+  /**
+   * Lazily fetch a thread's transcript the first time it is opened. Threads
+   * arrive from the list endpoint without messages, so this fills them in.
+   *
+   * No-ops when the transcript is already loaded, a fetch is in flight, or the
+   * thread is mid-stream (a locally created chat has no server transcript yet
+   * and we must not overwrite the streaming placeholder).
+   */
+  const loadMessages = useCallback(async (conversationId: string) => {
+    if (loadedMessagesRef.current.has(conversationId)) return;
+    if (streamRef.current) return;
 
-  const patch = useCallback(
-    (id: string, apply: (conversation: Conversation) => Conversation) => {
-      setConversations((prev) => prev.map((item) => (item.id === id ? apply(item) : item)));
-    },
-    [],
-  );
+    loadedMessagesRef.current.add(conversationId);
+    setLoadingMessages((prev) => new Set(prev).add(conversationId));
+    try {
+      const messages = await listMessages(conversationId);
+      setConversations((prev) =>
+        prev.map((item) =>
+          item.id === conversationId
+            ? { ...item, messages: messages.map(messageToChatMessage) }
+            : item,
+        ),
+      );
+    } catch {
+      // Allow a retry on the next open (e.g. transient network failure).
+      loadedMessagesRef.current.delete(conversationId);
+    } finally {
+      setLoadingMessages((prev) => {
+        const next = new Set(prev);
+        next.delete(conversationId);
+        return next;
+      });
+    }
+  }, []);
+
+  /** Drop all conversation state. Called on sign-out so the next user starts clean. */
+  const clearConversations = useCallback(() => {
+    streamRef.current?.stop();
+    streamRef.current = null;
+    loadedMessagesRef.current = new Set();
+    setStreaming(null);
+    setLoadingMessages(new Set());
+    setConversations([]);
+  }, []);
+
+  const patch = useCallback((id: string, apply: (conversation: Conversation) => Conversation) => {
+    setConversations((prev) => prev.map((item) => (item.id === id ? apply(item) : item)));
+  }, []);
 
   const getConversation = useCallback(
     (id: string) => conversations.find((item) => item.id === id),
@@ -85,6 +136,9 @@ export function useConversationsSlice(hydrated: boolean, settings: Settings): Co
         },
         ...prev,
       ]);
+      // Locally created: its transcript lives in memory, so never try to fetch
+      // one from the backend (the id isn't a server thread id).
+      loadedMessagesRef.current.add(id);
       void createConversationRequest({ id, model: model ?? settings.defaultModel });
       return id;
     },
@@ -258,7 +312,10 @@ export function useConversationsSlice(hydrated: boolean, settings: Settings): Co
   return {
     conversations,
     streaming,
+    loadingMessages,
     loadConversations,
+    loadMessages,
+    clearConversations,
     getConversation,
     createConversation,
     renameConversation,

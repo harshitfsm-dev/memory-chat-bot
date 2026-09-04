@@ -24,5 +24,8 @@ export { setMessageFeedback } from "./messages/set-message-feedback";
 
 export { uploadAttachment, MAX_UPLOAD_SIZE } from "./files/upload-attachment";
 
+export { listThreads, threadToConversation } from "./threads/list-threads";
+export { listMessages, messageToChatMessage } from "./threads/list-messages";
+
 export { ApiError } from "./http";
 export type * from "./types";

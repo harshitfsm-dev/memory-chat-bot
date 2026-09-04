@@ -28,18 +28,28 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
   const { loadSession } = authSlice;
   const { loadSettings } = settingsSlice;
-  const { loadConversations } = conversationsSlice;
+  const { loadConversations, clearConversations } = conversationsSlice;
+  const signedIn = authSlice.auth.signedIn;
 
-  /* single hydration pass through the API layer */
+  /* Hydrate local state (session + settings) once on mount. Threads are NOT
+     loaded here — they require auth and must not be fetched on the login page. */
   useEffect(() => {
     let active = true;
-    void Promise.all([loadSession(), loadSettings(), loadConversations()]).finally(() => {
+    void Promise.all([loadSession(), loadSettings()]).finally(() => {
       if (active) setHydrated(true);
     });
     return () => {
       active = false;
     };
-  }, [loadSession, loadSettings, loadConversations]);
+  }, [loadSession, loadSettings]);
+
+  /* Load the user's threads only once signed in (i.e. on the chat dashboard);
+     clear them on sign-out so a different user never sees stale threads. */
+  useEffect(() => {
+    if (!hydrated) return;
+    if (signedIn) void loadConversations();
+    else clearConversations();
+  }, [hydrated, signedIn, loadConversations, clearConversations]);
 
   const { auth, logIn, signOut } = authSlice;
   const { settings, updateSettings, saveSettings, resolvedTheme } = settingsSlice;
