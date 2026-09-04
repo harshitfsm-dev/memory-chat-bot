@@ -1,0 +1,28 @@
+/**
+ * API surface consumed by the app.
+ *
+ * Components and stores import from here only — every endpoint lives in its own
+ * file and currently resolves mock data. Swapping to the real backend means
+ * editing those endpoint files, nothing else.
+ */
+export { getSession } from "./auth/get-session";
+export { signIn } from "./auth/sign-in";
+export { signOut } from "./auth/sign-out";
+
+export { getSettings } from "./settings/get-settings";
+export { saveSettings } from "./settings/save-settings";
+
+export { listConversations } from "./conversations/list-conversations";
+export { createConversation } from "./conversations/create-conversation";
+export { updateConversation } from "./conversations/update-conversation";
+export { deleteConversation } from "./conversations/delete-conversation";
+export { persistConversations } from "./conversations/persist-conversations";
+
+export { streamCompletion } from "./messages/stream-completion";
+export { generateTitle, optimisticTitle } from "./messages/generate-title";
+export { setMessageFeedback } from "./messages/set-message-feedback";
+
+export { uploadAttachment, MAX_UPLOAD_SIZE } from "./files/upload-attachment";
+
+export { ApiError } from "./http";
+export type * from "./types";
