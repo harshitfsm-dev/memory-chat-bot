@@ -6,7 +6,7 @@
  * editing those endpoint files, nothing else.
  */
 export { getSession } from "./auth/get-session";
-export { signIn } from "./auth/sign-in";
+export { login } from "./auth/login";
 export { signOut } from "./auth/sign-out";
 
 export { getSettings } from "./settings/get-settings";

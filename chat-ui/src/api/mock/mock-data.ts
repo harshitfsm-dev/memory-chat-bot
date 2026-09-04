@@ -10,7 +10,6 @@ export const MOCK_USER: UserProfile = {
   plan: "Nova Plus",
 };
 
-
 const now = Date.now();
 const HOUR = 3600_000;
 const DAY = 24 * HOUR;
@@ -39,7 +38,7 @@ function conv(
 }
 
 export const MOCK_CONVERSATIONS: Conversation[] = [
-  conv("c-q3-marketing", "Q3 Marketing Strategy", 1.5 * HOUR, "nova-pro", [
+  conv("c-q3-marketing", "Q3 Marketing Strategy", 1.5 * HOUR, "deepseek-r1:14b", [
     {
       id: mid(),
       role: "user",
@@ -76,7 +75,7 @@ Want me to turn play #1 into a week-by-week content calendar?`,
       feedback: "up",
     },
   ]),
-  conv("c-rsc", "Explain React Server Components", 4 * HOUR, "nova-pro", [
+  conv("c-rsc", "Explain React Server Components", 4 * HOUR, "deepseek-r1:14b", [
     {
       id: mid(),
       role: "user",
@@ -124,7 +123,7 @@ Most production apps use both, with the loader priming the cache.`,
       createdAt: iso(3.85 * HOUR),
     },
   ]),
-  conv("c-sales-report", "Analyze Sales Report", 6 * HOUR, "nova-pro", [
+  conv("c-sales-report", "Analyze Sales Report", 6 * HOUR, "deepseek-r1:14b", [
     {
       id: mid(),
       role: "user",
@@ -168,7 +167,7 @@ The fastest lever is the onboarding call — cohorts that had one churned at 1.6
       createdAt: iso(6 * HOUR),
     },
   ]),
-  conv("c-launch-ideas", "Product Launch Ideas", 9 * HOUR, "nova-fast", [
+  conv("c-launch-ideas", "Product Launch Ideas", 9 * HOUR, "llama3.2:3b", [
     {
       id: mid(),
       role: "user",
@@ -187,7 +186,7 @@ The fastest lever is the onboarding call — cohorts that had one churned at 1.6
       feedback: "up",
     },
   ]),
-  conv("c-python-debug", "Python Debugging", 26 * HOUR, "nova-pro", [
+  conv("c-python-debug", "Python Debugging", 26 * HOUR, "deepseek-r1:14b", [
     {
       id: mid(),
       role: "user",
@@ -221,7 +220,7 @@ If every task shows \`acquire\` in its stack, it's the pool.`,
       createdAt: iso(26 * HOUR),
     },
   ]),
-  conv("c-travel", "Travel Planning", 30 * HOUR, "nova-fast", [
+  conv("c-travel", "Travel Planning", 30 * HOUR, "llama3.2:3b", [
     {
       id: mid(),
       role: "user",
@@ -252,7 +251,7 @@ Get a 7-day JR Pass only if you keep the Hakone leg — otherwise single tickets
       createdAt: iso(30 * HOUR),
     },
   ]),
-  conv("c-meeting-notes", "Meeting Notes Summary", 2.2 * DAY, "nova-fast", [
+  conv("c-meeting-notes", "Meeting Notes Summary", 2.2 * DAY, "llama3.2:3b", [
     {
       id: mid(),
       role: "user",
@@ -288,7 +287,7 @@ Get a 7-day JR Pass only if you keep the Hakone leg — otherwise single tickets
       createdAt: iso(2.2 * DAY),
     },
   ]),
-  conv("c-onboarding-copy", "Rewrite Onboarding Copy", 3.4 * DAY, "nova-fast", [
+  conv("c-onboarding-copy", "Rewrite Onboarding Copy", 3.4 * DAY, "llama3.2:3b", [
     {
       id: mid(),
       role: "user",
@@ -304,7 +303,7 @@ Empty states should answer: what happened, what to do, how long it takes.`,
       createdAt: iso(3.4 * DAY),
     },
   ]),
-  conv("c-sql-optimization", "Optimize a Slow Query", 4.6 * DAY, "nova-pro", [
+  conv("c-sql-optimization", "Optimize a Slow Query", 4.6 * DAY, "deepseek-r1:14b", [
     {
       id: mid(),
       role: "user",
@@ -331,7 +330,7 @@ If \`created_at\` filters most rows, a composite \`(tenant_id, created_at DESC)\
       feedback: "up",
     },
   ]),
-  conv("c-design-review", "Design Review Feedback", 6.1 * DAY, "nova-fast", [
+  conv("c-design-review", "Design Review Feedback", 6.1 * DAY, "llama3.2:3b", [
     {
       id: mid(),
       role: "user",
@@ -360,7 +359,7 @@ If \`created_at\` filters most rows, a composite \`(tenant_id, created_at DESC)\
       createdAt: iso(6.1 * DAY),
     },
   ]),
-  conv("c-competitor-teardown", "Competitor Teardown", 12 * DAY, "nova-pro", [
+  conv("c-competitor-teardown", "Competitor Teardown", 12 * DAY, "deepseek-r1:14b", [
     {
       id: mid(),
       role: "user",
@@ -382,7 +381,7 @@ Two changes with the most upside: collapse to three tiers, and put the "most tea
       createdAt: iso(12 * DAY),
     },
   ]),
-  conv("c-okrs", "Draft Team OKRs", 18 * DAY, "nova-fast", [
+  conv("c-okrs", "Draft Team OKRs", 18 * DAY, "llama3.2:3b", [
     {
       id: mid(),
       role: "user",
@@ -402,7 +401,7 @@ Keep it to one objective — six people can't move three.`,
       createdAt: iso(18 * DAY),
     },
   ]),
-  conv("c-support-macros", "Support Macro Library", 24 * DAY, "nova-fast", [
+  conv("c-support-macros", "Support Macro Library", 24 * DAY, "llama3.2:3b", [
     {
       id: mid(),
       role: "user",
@@ -427,7 +426,7 @@ Keep it to one objective — six people can't move three.`,
     "c-archived-brand",
     "Old Brand Guidelines Notes",
     41 * DAY,
-    "nova-fast",
+    "llama3.2:3b",
     [
       {
         id: mid(),

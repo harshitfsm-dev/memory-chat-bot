@@ -25,7 +25,15 @@ export interface ChatMessage {
   feedback?: "up" | "down" | null;
 }
 
-export type ModelId = "nova-fast" | "nova-pro";
+export type ModelId =
+  | "auto"
+  | "llama3.1:8b"
+  | "llama3.2:3b"
+  | "deepseek-r1:14b"
+  | "qwen3.6:27b-mlx"
+  | "gemma4:e4b-mlx"
+  | "qwen3.5:2b-mlx"
+  | "gemma4:12b-mlx";
 
 export interface Conversation {
   id: string;
@@ -83,6 +91,12 @@ export interface Model {
 }
 
 export const MODELS: Model[] = [
-  { id: "nova-fast", name: "Nova Fast", description: "Quick answers for everyday tasks" },
-  { id: "nova-pro", name: "Nova Pro", description: "Deeper reasoning, long documents, code" },
+  { id: "auto", name: "Auto", description: "Automatically pick the best model for each message" },
+  { id: "llama3.1:8b", name: "Llama 3.1 8B", description: "Balanced general-purpose model" },
+  { id: "llama3.2:3b", name: "Llama 3.2 3B", description: "Fast, lightweight responses" },
+  { id: "deepseek-r1:14b", name: "DeepSeek R1 14B", description: "Deeper reasoning and analysis" },
+  { id: "qwen3.6:27b-mlx", name: "Qwen 3.6 27B", description: "Largest model, most capable" },
+  { id: "gemma4:e4b-mlx", name: "Gemma 4 E4B", description: "Efficient on-device model" },
+  { id: "qwen3.5:2b-mlx", name: "Qwen 3.5 2B", description: "Compact and quick" },
+  { id: "gemma4:12b-mlx", name: "Gemma 4 12B", description: "Strong reasoning at mid size" },
 ];

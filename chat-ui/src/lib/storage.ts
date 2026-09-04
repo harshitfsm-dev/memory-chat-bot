@@ -4,6 +4,7 @@ export const STORAGE_KEYS = {
   conversations: `${PREFIX}conversations`,
   settings: `${PREFIX}settings`,
   auth: `${PREFIX}auth`,
+  authToken: `${PREFIX}auth-token`,
   sidebar: `${PREFIX}sidebar-collapsed`,
 } as const;
 

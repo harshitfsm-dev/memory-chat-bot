@@ -19,7 +19,7 @@ export const DEFAULT_SETTINGS: Settings = {
   showTimestamps: true,
   autoScroll: true,
   saveHistory: true,
-  defaultModel: "nova-fast",
+  defaultModel: "auto",
   chatHistoryEnabled: true,
   improveAi: false,
   rememberPreferences: true,

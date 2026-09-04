@@ -9,7 +9,7 @@ import { useSettingsSlice } from "./use-settings-slice";
 export interface AppStore extends ConversationsSlice {
   hydrated: boolean;
   auth: Session;
-  signIn: (email: string, name?: string) => void;
+  logIn: (email: string, password: string) => Promise<void>;
   signOut: () => void;
   settings: Settings;
   updateSettings: (patch: Partial<Settings>) => void;
@@ -41,14 +41,14 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     };
   }, [loadSession, loadSettings, loadConversations]);
 
-  const { auth, signIn, signOut } = authSlice;
+  const { auth, logIn, signOut } = authSlice;
   const { settings, updateSettings, saveSettings, resolvedTheme } = settingsSlice;
 
   const value = useMemo<AppStore>(
     () => ({
       hydrated,
       auth,
-      signIn,
+      logIn,
       signOut,
       settings,
       updateSettings,
@@ -59,7 +59,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     [
       hydrated,
       auth,
-      signIn,
+      logIn,
       signOut,
       settings,
       updateSettings,

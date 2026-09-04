@@ -1,14 +1,14 @@
 import { useCallback, useState } from "react";
 
-import { getSession, signIn as signInRequest, signOut as signOutRequest } from "@/api";
+import { getSession, login as loginRequest, signOut as signOutRequest } from "@/api";
+import { ApiError } from "@/api/http";
 import type { Session } from "@/api/types";
 import { GUEST_USER } from "@/lib/defaults";
-import { profileFromEmail } from "@/lib/user-profile";
 
 export interface AuthSlice {
   auth: Session;
   loadSession: () => Promise<void>;
-  signIn: (email: string, name?: string) => void;
+  logIn: (email: string, password: string) => Promise<void>;
   signOut: () => void;
 }
 
@@ -20,10 +20,20 @@ export function useAuthSlice(): AuthSlice {
     setAuth(session);
   }, []);
 
-  const signIn = useCallback((email: string, name?: string) => {
-    // optimistic: UI updates immediately, endpoint confirms the canonical profile
-    setAuth({ signedIn: true, user: profileFromEmail(email, name) });
-    void signInRequest({ email, ...(name ? { name } : {}) }).then(setAuth);
+  /**
+   * Authenticate against the backend. Resolves on success (state updated) and
+   * rejects with an {@link ApiError} the UI can render. Auth state is only
+   * flipped after the token is confirmed — no optimistic sign-in.
+   */
+  const logIn = useCallback(async (email: string, password: string) => {
+    try {
+      const session = await loginRequest({ email, password });
+      setAuth(session);
+    } catch (error) {
+      throw error instanceof ApiError
+        ? error
+        : new ApiError("Something went wrong. Please try again.", 0);
+    }
   }, []);
 
   const signOut = useCallback(() => {
@@ -31,5 +41,5 @@ export function useAuthSlice(): AuthSlice {
     void signOutRequest();
   }, []);
 
-  return { auth, loadSession, signIn, signOut };
+  return { auth, loadSession, logIn, signOut };
 }

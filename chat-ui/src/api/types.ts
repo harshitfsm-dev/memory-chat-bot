@@ -15,9 +15,16 @@ export interface Session {
   user: UserProfile;
 }
 
-export interface SignInPayload {
+/** Credentials sent to the backend login endpoint. */
+export interface LoginPayload {
   email: string;
-  name?: string;
+  password: string;
+}
+
+/** Token envelope returned by `POST /auth/login`. */
+export interface LoginResponse {
+  access_token: string;
+  token_type: string;
 }
 
 export interface CreateConversationPayload {

@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Zap, Gem } from "lucide-react";
+import { Check, ChevronDown, Sparkles, Zap } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -35,8 +35,8 @@ export function ModelSelector({
             className,
           )}
         >
-          {active.id === "nova-pro" ? (
-            <Gem className="size-3.5 text-brand" />
+          {active.id === "auto" ? (
+            <Sparkles className="size-3.5 text-brand" />
           ) : (
             <Zap className="size-3.5 text-brand" />
           )}
@@ -57,8 +57,8 @@ export function ModelSelector({
             className="flex items-start gap-2 rounded-xl px-2.5 py-2"
           >
             <span className="mt-0.5">
-              {model.id === "nova-pro" ? (
-                <Gem className="size-4 text-brand" />
+              {model.id === "auto" ? (
+                <Sparkles className="size-4 text-brand" />
               ) : (
                 <Zap className="size-4 text-brand" />
               )}
