@@ -19,7 +19,7 @@ class Settings(BaseSettings):
 
     AGENT_TIMEOUT_SECONDS: float = Field(default=90, gt=0)
     AGENT_MAX_CONCURRENCY: int = Field(default=2, ge=1, le=64)
-    AGENT_MAX_OUTPUT_TOKENS: int = Field(default=1_024, ge=64, le=32_768)
+    AGENT_MAX_OUTPUT_TOKENS: int = Field(default=4_096, ge=64, le=32_768)
     AGENT_TITLE_TIMEOUT_SECONDS: float = Field(default=15, gt=0)
     AGENT_TITLE_MAX_TOKENS: int = Field(default=24, ge=8, le=256)
     AGENT_RECURSION_LIMIT: int = Field(default=8, ge=2, le=50)
