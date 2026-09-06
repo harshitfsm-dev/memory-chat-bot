@@ -28,6 +28,23 @@ Reply with the title only: no quotes, no prefix, no trailing punctuation.
 Never answer the message itself.
 """
 
+SUMMARY_PROMPT = """You keep short notes about a conversation.
+
+You are given the notes so far (possibly empty) and the messages that came
+after them. Rewrite the notes so they cover both.
+
+Always keep:
+- Facts the user stated about themselves or their situation.
+- Exact names, numbers, codes and dates, copied character for character.
+- Decisions made, and questions the user asked that were never answered.
+
+Rules:
+- Write short third-person notes, one fact per line. Not dialogue, not prose.
+- Never shorten or reword an identifier. A wrong number is worse than no number.
+- If the notes and a newer message disagree, the newer message is correct.
+- Reply with the notes only. Never answer or continue the conversation.
+"""
+
 
 class TrimHistoryMiddleware(AgentMiddleware):
     """Cap messages sent to the model during a single agent run."""
@@ -87,4 +104,19 @@ def build_title_agent(
     return create_agent(
         model=model,
         system_prompt=TITLE_PROMPT,
+    )
+
+
+def build_summary_agent(
+    model: BaseChatModel,
+) -> CompiledStateGraph[Any, Any, Any, Any]:
+    """Create the runtime that writes a thread's summary.
+
+    No tools and no history trimming: the input is one prompt we already keep
+    small, and trimming it would throw away the messages we are trying to
+    summarize.
+    """
+    return create_agent(
+        model=model,
+        system_prompt=SUMMARY_PROMPT,
     )

@@ -9,6 +9,7 @@ from app.db.unit_of_work import UnitOfWork, get_unit_of_work
 from app.repositories.chat_message_repository import ChatMessageRepository
 from app.repositories.chat_thread_repository import ChatThreadRepository
 from app.services.chat_service import ChatService
+from app.services.summary_service import SummaryService
 
 
 def get_chat_service(
@@ -26,14 +27,31 @@ def get_chat_service(
     both repositories share one session and therefore one transaction.
     """
     settings = get_settings()
+    chat_message_repo = ChatMessageRepository(db)
+    chat_thread_repo = ChatThreadRepository(db)
+
+    summary_service = SummaryService(
+        chat_message_repo=chat_message_repo,
+        chat_thread_repo=chat_thread_repo,
+        uow=uow,
+        summary_agent=request.app.state.summary_agent,
+        agent_semaphore=request.app.state.agent_semaphore,
+        enabled=settings.SUMMARY_ENABLED,
+        trigger_messages=settings.SUMMARY_TRIGGER_MESSAGES,
+        keep_recent_messages=settings.SUMMARY_KEEP_RECENT_MESSAGES,
+        timeout_seconds=settings.AGENT_TIMEOUT_SECONDS,
+    )
+
     return ChatService(
-        chat_message_repo=ChatMessageRepository(db),
-        chat_thread_repo=ChatThreadRepository(db),
+        chat_message_repo=chat_message_repo,
+        chat_thread_repo=chat_thread_repo,
         uow=uow,
         agent=request.app.state.agent,
         title_agent=request.app.state.title_agent,
         agent_semaphore=request.app.state.agent_semaphore,
+        summary_service=summary_service,
         timeout_seconds=settings.AGENT_TIMEOUT_SECONDS,
         recursion_limit=settings.AGENT_RECURSION_LIMIT,
         title_timeout_seconds=settings.AGENT_TITLE_TIMEOUT_SECONDS,
+        history_max_messages=settings.AGENT_HISTORY_MAX_MESSAGES,
     )

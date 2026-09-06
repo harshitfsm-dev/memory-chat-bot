@@ -5,22 +5,25 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 from app.db.unit_of_work import UnitOfWork
-from app.models.chat_message import ChatMessage
+from app.memory import build_prompt
+from app.models.chat_message import ROLE_ASSISTANT, ROLE_USER, ChatMessage
 from app.models.chat_thread import ChatThread
 from app.repositories.chat_message_repository import ChatMessageRepository
 from app.repositories.chat_thread_repository import ChatThreadRepository
+from app.services.summary_service import SummaryService
 
 logger = logging.getLogger(__name__)
 
 TITLE_MAX_LENGTH = 60
 
-ROLE_USER = "user"
-ROLE_ASSISTANT = "assistant"
+# The title model sees only the start of a long message. A six-word title does
+# not need more, and the whole message might not fit its context window.
+TITLE_INPUT_MAX_CHARS = 2_000
 
 
 class AgentExecutionError(RuntimeError):
@@ -70,10 +73,12 @@ class ChatService:
         agent: CompiledStateGraph[Any, Any, Any, Any],
         title_agent: CompiledStateGraph[Any, Any, Any, Any],
         agent_semaphore: asyncio.Semaphore,
+        summary_service: SummaryService,
         *,
         timeout_seconds: float,
         recursion_limit: int,
         title_timeout_seconds: float,
+        history_max_messages: int,
     ):
         self.chat_message_repo = chat_message_repo
         self.chat_thread_repo = chat_thread_repo
@@ -81,9 +86,11 @@ class ChatService:
         self.agent = agent
         self.title_agent = title_agent
         self.agent_semaphore = agent_semaphore
+        self.summary_service = summary_service
         self.timeout_seconds = timeout_seconds
         self.recursion_limit = recursion_limit
         self.title_timeout_seconds = title_timeout_seconds
+        self.history_max_messages = history_max_messages
 
     async def chat(
         self,
@@ -93,9 +100,9 @@ class ChatService:
     ) -> ChatResult:
         """Answer one message and persist the transcript.
 
-        The agent is intentionally stateless for now. `thread_id` groups the
-        durable SQL transcript and enforces ownership, but previous turns are
-        not sent to the model.
+        The agent itself stores nothing between requests. Memory comes from this
+        method: it loads the thread's summary and recent messages and sends them
+        along with the new message.
 
         Writes span two transactions rather than one. The first stores the
         user's turn and, in doing so, releases the pooled database connection
@@ -108,6 +115,11 @@ class ChatService:
             user_id=user_id,
             thread_id=thread_id,
         )
+
+        # Load memory before saving the new message, or the new message would
+        # show up in its own history.
+        messages = await self._build_prompt(thread, message)
+
         run_id = str(uuid.uuid4())
         config: RunnableConfig = {
             "recursion_limit": self.recursion_limit,
@@ -125,19 +137,14 @@ class ChatService:
         # insert fails. Committing before generation also deliberately keeps
         # the user's turn when the agent later fails, so the transcript
         # reflects what they submitted.
-        self.chat_message_repo.create(
-            thread_id=thread.id,
-            role=ROLE_USER,
-            content=message,
-        )
-        await self.uow.commit()
+        await self._save_message(thread.id, ROLE_USER, message)
 
         try:
             # This deadline includes time waiting for an Ollama execution slot.
             async with asyncio.timeout(self.timeout_seconds):
                 async with self.agent_semaphore:
                     result = await self.agent.ainvoke(
-                        {"messages": [HumanMessage(content=message)]},
+                        {"messages": messages},
                         config=config,
                     )
             answer = self._final_answer(result)
@@ -160,12 +167,7 @@ class ChatService:
 
         # A failure here raises PersistenceError rather than returning the
         # answer, so the caller is never told a turn was stored when it wasn't.
-        self.chat_message_repo.create(
-            thread_id=thread.id,
-            role=ROLE_ASSISTANT,
-            content=answer,
-        )
-        await self.uow.commit()
+        await self._save_message(thread.id, ROLE_ASSISTANT, answer)
 
         logger.info(
             "Agent execution completed: run=%s thread=%s user=%s",
@@ -173,6 +175,8 @@ class ChatService:
             thread.id,
             user_id,
         )
+
+        await self._update_summary(thread)
 
         return ChatResult(
             answer=answer,
@@ -188,10 +192,11 @@ class ChatService:
     ) -> AsyncIterator[StreamChunk]:
         """Answer one message as a stream of token chunks and persist the turn.
 
-        Mirrors `chat` but streams the model output. The transaction discipline
-        is identical and deliberate: the user's turn is committed *before*
-        inference so the pooled connection is released during the slow model
-        call, and the assistant's turn is committed *after* the stream drains.
+        Mirrors `chat` but streams the model output, memory included. The
+        transaction discipline is identical and deliberate: the user's turn is
+        committed *before* inference so the pooled connection is released during
+        the slow model call, and the assistant's turn is committed *after* the
+        stream drains.
 
         Ownership and persistence failures that occur before the first token
         are raised (so the transport can still answer with an HTTP error). Once
@@ -203,6 +208,8 @@ class ChatService:
             user_id=user_id,
             thread_id=thread_id,
         )
+        messages = await self._build_prompt(thread, message)
+
         run_id = str(uuid.uuid4())
         config: RunnableConfig = {
             "recursion_limit": self.recursion_limit,
@@ -218,12 +225,7 @@ class ChatService:
         # Commit the user's turn (and any new thread) before inference, exactly
         # as the non-streaming path does. A failure here propagates before the
         # stream opens, so the transport can still return an HTTP error.
-        self.chat_message_repo.create(
-            thread_id=thread.id,
-            role=ROLE_USER,
-            content=message,
-        )
-        await self.uow.commit()
+        await self._save_message(thread.id, ROLE_USER, message)
 
         # Announce the resolved thread before tokens so the client can attach
         # them to the right (possibly brand-new) thread.
@@ -237,7 +239,7 @@ class ChatService:
         try:
             async with asyncio.timeout(self.timeout_seconds):
                 async with self.agent_semaphore:
-                    async for delta in self._stream_tokens(message, config):
+                    async for delta in self._stream_tokens(messages, config):
                         parts.append(delta)
                         yield StreamChunk(type="delta", text=delta)
         except TimeoutError:
@@ -274,12 +276,7 @@ class ChatService:
         # client already has the text; log and still close with an error chunk
         # so the client knows the turn was not saved.
         try:
-            self.chat_message_repo.create(
-                thread_id=thread.id,
-                role=ROLE_ASSISTANT,
-                content=answer,
-            )
-            await self.uow.commit()
+            await self._save_message(thread.id, ROLE_ASSISTANT, answer)
         except Exception:
             logger.exception(
                 "Failed to persist streamed answer: run=%s thread=%s user=%s",
@@ -298,9 +295,60 @@ class ChatService:
         )
         yield StreamChunk(type="done", text=answer)
 
+        # After the last chunk, so the client is not kept waiting for it.
+        await self._update_summary(thread)
+
+    async def _build_prompt(
+        self,
+        thread: ChatThread,
+        message: str,
+    ) -> list[BaseMessage]:
+        """Load the thread's memory and turn it into the model's input.
+
+        Two parts: the summary of older messages, and the most recent messages
+        word for word. `summary_up_to_seq` keeps them from overlapping.
+
+        A brand new thread has no messages, so this simply returns the one new
+        message.
+        """
+        history = await self.chat_message_repo.get_recent_messages(
+            thread_id=thread.id,
+            limit=self.history_max_messages,
+            after_seq=thread.summary_up_to_seq,
+        )
+        return build_prompt(history, message, thread.summary)
+
+    async def _save_message(self, thread_id: str, role: str, content: str) -> None:
+        """Append one message to the thread and commit it."""
+        seq = await self.chat_message_repo.next_seq(thread_id)
+        self.chat_message_repo.create(
+            thread_id=thread_id,
+            role=role,
+            content=content,
+            seq=seq,
+        )
+        await self.uow.commit()
+
+    async def _update_summary(self, thread: ChatThread) -> None:
+        """Refresh the thread's summary if it has grown enough.
+
+        Runs after the turn is already saved, so a failure here costs nothing:
+        it is logged, the answer still went out, and the next turn tries again.
+        """
+        try:
+            await self.summary_service.update_if_needed(
+                thread_id=thread.id,
+                current_summary=thread.summary,
+                summary_up_to_seq=thread.summary_up_to_seq,
+            )
+        except Exception:
+            logger.warning(
+                "Could not update summary for thread=%s", thread.id, exc_info=True
+            )
+
     async def _stream_tokens(
         self,
-        message: str,
+        messages: list[BaseMessage],
         config: RunnableConfig,
     ) -> AsyncIterator[str]:
         """Yield model token text from the agent's streamed events.
@@ -310,7 +358,7 @@ class ChatService:
         client.
         """
         async for event in self.agent.astream_events(
-            {"messages": [HumanMessage(content=message)]},
+            {"messages": messages},
             config=config,
             version="v2",
         ):
@@ -318,8 +366,9 @@ class ChatService:
                 continue
             chunk = event.get("data", {}).get("chunk")
             text = getattr(chunk, "text", None)
-            # `text` can be a str or (older) a method; normalize and skip empties.
-            if callable(text):
+            # `text` is normally a string, but older versions exposed a method.
+            # Checking for a string first avoids the deprecated call path.
+            if not isinstance(text, str) and callable(text):
                 text = text()
             if isinstance(text, str) and text:
                 yield text
@@ -359,7 +408,11 @@ class ChatService:
             async with asyncio.timeout(self.title_timeout_seconds):
                 async with self.agent_semaphore:
                     result = await self.title_agent.ainvoke(
-                        {"messages": [HumanMessage(content=message)]},
+                        {
+                            "messages": [
+                                HumanMessage(content=message[:TITLE_INPUT_MAX_CHARS])
+                            ]
+                        },
                         config=config,
                     )
             title = self._final_answer(result)

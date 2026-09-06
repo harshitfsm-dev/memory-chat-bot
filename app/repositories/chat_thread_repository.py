@@ -1,4 +1,4 @@
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat_thread import ChatThread
@@ -42,6 +42,24 @@ class ChatThreadRepository:
             )
         )
         return result.rowcount > 0
+
+    async def save_summary(
+        self,
+        thread_id: str,
+        summary: str,
+        up_to_seq: int,
+    ) -> None:
+        """Store the thread's summary and how far it covers.
+
+        The caller commits through the unit of work. Both values are written
+        together on purpose: a summary without its boundary would leave us unable
+        to tell which messages it already describes.
+        """
+        await self.db.execute(
+            update(ChatThread)
+            .where(ChatThread.id == thread_id)
+            .values(summary=summary, summary_up_to_seq=up_to_seq)
+        )
 
     async def create(self, user_id: str, title: str) -> ChatThread:
         """Stage a new thread and flush it. The caller still owns the commit.

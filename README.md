@@ -75,9 +75,69 @@ execution slot. A single request-wide transaction would pin one for the full
 Committing before generation also means a user's turn survives a failed or
 timed-out response, so the transcript reflects what they actually submitted.
 
-The agent is intentionally **stateless**: existing transcript messages are not sent back to the model, so a later request does not remember earlier turns. Threads currently group durable transcripts only. Conversation memory can be added later with a checkpointer or an explicit history-loading strategy.
-
 The configured primary Ollama model must support native tool calling. Model execution is bounded by a shared concurrency limit, output-token cap, recursion limit, and total request timeout.
+
+## Short-term memory
+
+The agent stores nothing between requests. Memory is rebuilt on every turn from
+what is in the database, which means the prompt is always something you can go
+look at in SQL.
+
+Each turn sends the model three things, in this order:
+
+1. A summary of the older messages, if the thread has one.
+2. The most recent `AGENT_HISTORY_MAX_MESSAGES` messages, word for word.
+3. The new message.
+
+Two columns make that possible. `chat_messages.seq` numbers messages within a
+thread (1, 2, 3...), and `chat_threads.summary_up_to_seq` records how far the
+summary already reaches. The replay window only loads messages with a higher
+`seq`, so nothing is described twice — once in the summary and once verbatim.
+
+`seq` exists instead of ordering by `created_at` because messages saved in the
+same transaction share a timestamp, which leaves their order undefined.
+
+Three files hold it all:
+
+| File | What it does |
+| --- | --- |
+| `app/memory.py` | Plain functions: database rows in, LangChain messages out. No I/O, easy to read. |
+| `app/services/summary_service.py` | Decides when to summarize and writes the summary. |
+| `app/services/chat_service.py` | `_build_prompt`, `_save_message`, `_update_summary`. |
+
+### Summarizing older messages
+
+Once a thread has `SUMMARY_TRIGGER_MESSAGES` messages the summary does not cover,
+everything except the newest `SUMMARY_KEEP_RECENT_MESSAGES` is folded into it. The
+recent ones stay word for word because follow-up questions point at them
+("that one", "make it 5"), and rewording breaks those references.
+
+Summarizing is incremental: the model sees the previous summary plus only the new
+messages, never the whole thread, so the prompt stays small however long the
+conversation runs.
+
+It runs after the turn is already saved and its errors are caught and logged, so
+a failed summary never breaks a chat — the same messages are simply tried again
+after the next turn. It does mean the caller waits for a second model call on the
+turns where it fires. Moving it to a background task is the natural next step.
+
+Startup refuses to boot if `SUMMARY_TRIGGER_MESSAGES` is above
+`AGENT_HISTORY_MAX_MESSAGES`. Summarizing only preserves messages while they are
+still being replayed; if the trigger were higher, messages would fall out of the
+window before anything summarized them and would be lost.
+
+### Things left simple on purpose
+
+- Tool calls are not stored, so the model does not see what a tool returned in an
+  earlier turn. Tools still work normally within a single turn.
+- `next_seq()` reads `MAX(seq) + 1`. Two requests writing to one thread at the
+  exact same moment could pick the same number; the unique constraint on
+  `(thread_id, seq)` turns that into a clear error rather than jumbled messages.
+- Prompt size is capped by `TrimHistoryMiddleware` using LangChain's approximate
+  token counting, not a real tokenizer.
+- `OLLAMA_NUM_CTX` is set explicitly. Ollama's default is 4096 whatever the model
+  supports, and a longer prompt gets its beginning cut off silently, system
+  prompt first — which looks like a model ignoring its instructions.
 
 ## Database migrations
 
