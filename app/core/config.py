@@ -7,6 +7,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
+# Longest message the chat API accepts. Shared with the request schema so the
+# token arithmetic below is checked against what clients can actually send.
+MAX_MESSAGE_CHARS = 20_000
+
+# Rough characters-per-token, only used for the startup sanity check.
+APPROX_CHARS_PER_TOKEN = 4
+
 
 class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
@@ -34,31 +41,40 @@ class Settings(BaseSettings):
     AGENT_TITLE_TIMEOUT_SECONDS: float = Field(default=15, gt=0)
     AGENT_TITLE_MAX_TOKENS: int = Field(default=24, ge=8, le=256)
     AGENT_RECURSION_LIMIT: int = Field(default=8, ge=2, le=50)
-    AGENT_HISTORY_MAX_TOKENS: int = Field(default=4_000, ge=256)
-    """Token ceiling for the messages sent to the model, enforced by
-    TrimHistoryMiddleware as a safety net."""
 
-    AGENT_HISTORY_MAX_MESSAGES: int = Field(default=20, ge=2)
-    """How many recent messages to replay. The main memory dial.
+    AGENT_HISTORY_MAX_TOKENS: int = Field(default=10_000, ge=1_024)
+    """Token budget for everything we send the model: summary, replayed
+    messages, and the new message together. The main memory dial.
 
-    Raise it and the model remembers more but every request costs more; lower it
-    and replies get cheaper but shorter-sighted.
+    Measured in tokens rather than messages because message counts say nothing
+    about size — twenty one-line messages and twenty pasted documents are wildly
+    different prompts.
+
+    Must leave room for the reply inside OLLAMA_NUM_CTX; checked at startup.
+    """
+
+    AGENT_HISTORY_MAX_MESSAGES: int = Field(default=40, ge=2)
+    """Row cap on the history query, on top of the token budget.
+
+    Stops the query loading thousands of rows just to throw most away. The token
+    budget is what actually decides what the model sees.
     """
 
     SUMMARY_ENABLED: bool = True
-    """Whether older messages get summarized. Off means they are just forgotten
-    once they fall outside AGENT_HISTORY_MAX_MESSAGES."""
+    """Whether older messages get summarized. Off means they are simply
+    forgotten once they no longer fit AGENT_HISTORY_MAX_TOKENS."""
 
-    SUMMARY_TRIGGER_MESSAGES: int = Field(default=12, ge=4)
-    """Unsummarized messages needed before a summary is written or refreshed.
+    SUMMARY_TRIGGER_TOKENS: int = Field(default=4_000, ge=256)
+    """Unsummarized tokens needed before a summary is written or refreshed.
 
-    Keep it below AGENT_HISTORY_MAX_MESSAGES so messages are summarized while
-    they are still being replayed. If it were higher, messages would drop out of
-    the replay window before anything summarized them, and they would be lost.
+    Must stay below AGENT_HISTORY_MAX_TOKENS minus SUMMARY_MAX_TOKENS, so
+    messages get summarized while they still fit in the prompt. If it were
+    higher, messages would be dropped for space before anything summarized them
+    and that history would be lost for good. Checked at startup.
     """
 
-    SUMMARY_KEEP_RECENT_MESSAGES: int = Field(default=6, ge=2)
-    """Newest messages never folded into the summary.
+    SUMMARY_KEEP_RECENT_TOKENS: int = Field(default=1_500, ge=128)
+    """Newest tokens never folded into the summary.
 
     Follow-up questions point at recent messages ("that one", "make it 5"), and
     those references stop making sense once reworded.
@@ -80,30 +96,57 @@ class Settings(BaseSettings):
     )
 
     @model_validator(mode="after")
-    def summary_must_run_before_messages_are_forgotten(self) -> "Settings":
-        """Catch a settings combination that would silently lose history.
+    def token_budgets_must_add_up(self) -> "Settings":
+        """Check the token arithmetic, because getting it wrong is silent.
 
-        Summarizing only helps while the messages are still being replayed. If
-        the trigger is higher than the replay window, messages scroll out of the
-        window before anything summarizes them and they are gone for good.
+        Every one of these mistakes produces no error at runtime — just a model
+        that forgets things or ignores its instructions. Better to refuse to
+        start than to debug that later.
         """
-        if self.SUMMARY_ENABLED and (
-            self.SUMMARY_TRIGGER_MESSAGES > self.AGENT_HISTORY_MAX_MESSAGES
-        ):
+        # 1. The prompt and the reply share one context window.
+        needed = self.AGENT_HISTORY_MAX_TOKENS + self.AGENT_MAX_OUTPUT_TOKENS
+        if needed > self.OLLAMA_NUM_CTX:
             raise ValueError(
-                f"SUMMARY_TRIGGER_MESSAGES ({self.SUMMARY_TRIGGER_MESSAGES}) must "
-                f"not exceed AGENT_HISTORY_MAX_MESSAGES "
-                f"({self.AGENT_HISTORY_MAX_MESSAGES}), otherwise messages are "
-                "forgotten before they are ever summarized."
+                f"AGENT_HISTORY_MAX_TOKENS ({self.AGENT_HISTORY_MAX_TOKENS}) plus "
+                f"AGENT_MAX_OUTPUT_TOKENS ({self.AGENT_MAX_OUTPUT_TOKENS}) is "
+                f"{needed}, which does not fit OLLAMA_NUM_CTX "
+                f"({self.OLLAMA_NUM_CTX}). Ollama would silently cut the start "
+                "off the prompt. Raise the window or lower one of the budgets."
             )
-        if self.SUMMARY_ENABLED and (
-            self.SUMMARY_KEEP_RECENT_MESSAGES >= self.SUMMARY_TRIGGER_MESSAGES
-        ):
+
+        # 2. A single request must be able to fit the prompt on its own,
+        #    otherwise long messages fail instead of being answered.
+        max_message_tokens = MAX_MESSAGE_CHARS // APPROX_CHARS_PER_TOKEN
+        if max_message_tokens > self.AGENT_HISTORY_MAX_TOKENS:
             raise ValueError(
-                f"SUMMARY_KEEP_RECENT_MESSAGES ({self.SUMMARY_KEEP_RECENT_MESSAGES}) "
-                f"must be below SUMMARY_TRIGGER_MESSAGES "
-                f"({self.SUMMARY_TRIGGER_MESSAGES}), otherwise there is never "
-                "anything left to summarize."
+                f"A maximum-length message is about {max_message_tokens} tokens, "
+                f"more than AGENT_HISTORY_MAX_TOKENS "
+                f"({self.AGENT_HISTORY_MAX_TOKENS}). Such a message could never "
+                "be answered. Raise the budget or lower MAX_MESSAGE_CHARS."
+            )
+
+        if not self.SUMMARY_ENABLED:
+            return self
+
+        # 3. Summarizing only preserves messages while they still fit the
+        #    prompt. Trigger too late and they are dropped for space first, and
+        #    nothing can recover them.
+        room = self.AGENT_HISTORY_MAX_TOKENS - self.SUMMARY_MAX_TOKENS
+        if self.SUMMARY_TRIGGER_TOKENS >= room:
+            raise ValueError(
+                f"SUMMARY_TRIGGER_TOKENS ({self.SUMMARY_TRIGGER_TOKENS}) must stay "
+                f"below AGENT_HISTORY_MAX_TOKENS minus SUMMARY_MAX_TOKENS "
+                f"({room}), otherwise messages are dropped for space before "
+                "anything summarizes them and that history is lost."
+            )
+
+        # 4. Something has to be left over to summarize.
+        if self.SUMMARY_KEEP_RECENT_TOKENS >= self.SUMMARY_TRIGGER_TOKENS:
+            raise ValueError(
+                f"SUMMARY_KEEP_RECENT_TOKENS ({self.SUMMARY_KEEP_RECENT_TOKENS}) "
+                f"must be below SUMMARY_TRIGGER_TOKENS "
+                f"({self.SUMMARY_TRIGGER_TOKENS}), otherwise there is never "
+                "anything old enough to summarize."
             )
         return self
 

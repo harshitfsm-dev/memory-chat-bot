@@ -37,8 +37,9 @@ def get_chat_service(
         summary_agent=request.app.state.summary_agent,
         agent_semaphore=request.app.state.agent_semaphore,
         enabled=settings.SUMMARY_ENABLED,
-        trigger_messages=settings.SUMMARY_TRIGGER_MESSAGES,
-        keep_recent_messages=settings.SUMMARY_KEEP_RECENT_MESSAGES,
+        trigger_tokens=settings.SUMMARY_TRIGGER_TOKENS,
+        keep_recent_tokens=settings.SUMMARY_KEEP_RECENT_TOKENS,
+        max_messages_per_run=settings.AGENT_HISTORY_MAX_MESSAGES,
         timeout_seconds=settings.AGENT_TIMEOUT_SECONDS,
     )
 
@@ -54,4 +55,5 @@ def get_chat_service(
         recursion_limit=settings.AGENT_RECURSION_LIMIT,
         title_timeout_seconds=settings.AGENT_TITLE_TIMEOUT_SECONDS,
         history_max_messages=settings.AGENT_HISTORY_MAX_MESSAGES,
+        history_max_tokens=settings.AGENT_HISTORY_MAX_TOKENS,
     )

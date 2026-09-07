@@ -79,6 +79,8 @@ The configured primary Ollama model must support native tool calling. Model exec
 
 ## Short-term memory
 
+> Full walkthrough with worked examples: [docs/short-term-memory.md](docs/short-term-memory.md)
+
 The agent stores nothing between requests. Memory is rebuilt on every turn from
 what is in the database, which means the prompt is always something you can go
 look at in SQL.
@@ -86,8 +88,13 @@ look at in SQL.
 Each turn sends the model three things, in this order:
 
 1. A summary of the older messages, if the thread has one.
-2. The most recent `AGENT_HISTORY_MAX_MESSAGES` messages, word for word.
+2. As many recent messages as fit `AGENT_HISTORY_MAX_TOKENS`, word for word.
 3. The new message.
+
+Everything is budgeted in **tokens**, not message counts, using LangChain's
+`count_tokens_approximately`. Counting messages looks simpler but breaks badly:
+twenty short messages fit easily while twenty pasted documents can be several
+times the whole context window.
 
 Two columns make that possible. `chat_messages.seq` numbers messages within a
 thread (1, 2, 3...), and `chat_threads.summary_up_to_seq` records how far the
@@ -107,10 +114,17 @@ Three files hold it all:
 
 ### Summarizing older messages
 
-Once a thread has `SUMMARY_TRIGGER_MESSAGES` messages the summary does not cover,
-everything except the newest `SUMMARY_KEEP_RECENT_MESSAGES` is folded into it. The
-recent ones stay word for word because follow-up questions point at them
-("that one", "make it 5"), and rewording breaks those references.
+Once a thread has `SUMMARY_TRIGGER_TOKENS` worth of messages the summary does not
+cover, the oldest are folded into it, keeping the newest
+`SUMMARY_KEEP_RECENT_TOKENS` word for word. The recent ones stay verbatim because
+follow-up questions point at them ("that one", "make it 5"), and rewording breaks
+those references.
+
+The cut is then moved forward to land just before a user message, so a summary
+never splits a question from its answer. Getting this wrong is not subtle in
+effect but is invisible in the logs: a window that opens on an assistant reply
+shows the model an answer with no question, and in testing that was enough to
+make it deny facts it had actually been told.
 
 Summarizing is incremental: the model sees the previous summary plus only the new
 messages, never the whole thread, so the prompt stays small however long the
@@ -121,10 +135,35 @@ a failed summary never breaks a chat — the same messages are simply tried agai
 after the next turn. It does mean the caller waits for a second model call on the
 turns where it fires. Moving it to a background task is the natural next step.
 
-Startup refuses to boot if `SUMMARY_TRIGGER_MESSAGES` is above
-`AGENT_HISTORY_MAX_MESSAGES`. Summarizing only preserves messages while they are
-still being replayed; if the trigger were higher, messages would fall out of the
-window before anything summarized them and would be lost.
+The summary reaches the model as a user message plus a short assistant
+acknowledgement, not as a `SystemMessage`. That looks roundabout and it is
+deliberate: with tools bound, the chat template fills the system slot with tool
+definitions and a second system message was silently ignored, so the model
+answered as though the summary did not exist. An A/B against the real agent
+showed the priming pair working where the system message failed.
+
+### Startup checks the token arithmetic
+
+Every one of these mistakes is silent at runtime — you get a model that forgets
+things or ignores instructions, not an error — so the app refuses to start
+instead:
+
+- `AGENT_HISTORY_MAX_TOKENS + AGENT_MAX_OUTPUT_TOKENS` must fit `OLLAMA_NUM_CTX`.
+  Otherwise Ollama trims the front of the prompt without saying so.
+- A maximum-length message must fit `AGENT_HISTORY_MAX_TOKENS` on its own.
+  Before this check, a 19,000-character paste made `trim_messages` return an
+  empty list, the agent then looped until it hit the recursion limit, and the
+  caller got a 502. A message that genuinely cannot fit now gets a 413.
+- `SUMMARY_TRIGGER_TOKENS` must stay below
+  `AGENT_HISTORY_MAX_TOKENS - SUMMARY_MAX_TOKENS`. Summarizing only preserves
+  messages while they still fit the prompt; trigger too late and they are dropped
+  for space first, and nothing can recover them.
+- `SUMMARY_KEEP_RECENT_TOKENS` must be below `SUMMARY_TRIGGER_TOKENS`, or nothing
+  is ever old enough to summarize.
+
+If history is ever dropped for space anyway, `ChatService` logs
+`Dropped N unsummarized message(s) for space`. That means summarizing is not
+keeping pace: lower the trigger or raise the budget.
 
 ### Things left simple on purpose
 
@@ -133,8 +172,14 @@ window before anything summarized them and would be lost.
 - `next_seq()` reads `MAX(seq) + 1`. Two requests writing to one thread at the
   exact same moment could pick the same number; the unique constraint on
   `(thread_id, seq)` turns that into a clear error rather than jumbled messages.
-- Prompt size is capped by `TrimHistoryMiddleware` using LangChain's approximate
-  token counting, not a real tokenizer.
+- Token counts are LangChain's estimate, not the model's real tokenizer — Ollama
+  does not expose one. Close enough given the budgets leave slack.
+- `TrimHistoryMiddleware` is only a backstop for growth inside a single run
+  (a long tool loop). `ChatService` already fits the prompt to the same budget
+  before the run starts, so in normal operation it does nothing.
+- The summary model runs with `reasoning=False`. Its `num_predict` is only
+  `SUMMARY_MAX_TOKENS`, and a reasoning model spends that budget thinking and
+  returns nothing — which showed up as `Summarizer returned nothing` in the logs.
 - `OLLAMA_NUM_CTX` is set explicitly. Ollama's default is 4096 whatever the model
   supports, and a longer prompt gets its beginning cut off silently, system
   prompt first — which looks like a model ignoring its instructions.

@@ -2,9 +2,13 @@ from datetime import datetime
 import uuid
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.core.config import MAX_MESSAGE_CHARS
+
 
 class ChatRequest(BaseModel):
-    message: str = Field(max_length=20_000)
+    # Shared with config so startup can check that a message this long can
+    # actually fit the model's context budget.
+    message: str = Field(max_length=MAX_MESSAGE_CHARS)
     thread_id: uuid.UUID | None = None
 
     @field_validator("thread_id", mode="before")

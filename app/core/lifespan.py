@@ -53,10 +53,15 @@ async def lifespan(app: FastAPI):
     # Summaries stand in for messages the model can no longer see, so they use
     # the main model rather than the small one. Same num_ctx keeps Ollama from
     # loading a second copy of it.
+    #
+    # reasoning=False matters here. num_predict is only SUMMARY_MAX_TOKENS, and a
+    # reasoning model will spend that budget thinking and return nothing at all.
+    # Summarizing needs no reasoning: it is copying facts out of a transcript.
     summary_model = create_ollama_model(
         model=settings.OLLAMA_AGENT_MODEL,
         temperature=settings.OLLAMA_TEMPERATURE,
         timeout_seconds=settings.OLLAMA_TIMEOUT_SECONDS,
+        reasoning=False,
         num_predict=settings.SUMMARY_MAX_TOKENS,
         num_ctx=settings.OLLAMA_NUM_CTX,
     )
@@ -71,14 +76,18 @@ async def lifespan(app: FastAPI):
         history_max_tokens=settings.AGENT_HISTORY_MAX_TOKENS,
     )
     logger.info(
-        "Agents initialized: max_concurrency=%s num_ctx=%s history_messages=%s "
-        "summary=%s (trigger=%s keep_recent=%s)",
+        "Agents initialized: max_concurrency=%s num_ctx=%s "
+        "history_budget=%s tokens (row cap %s) output=%s "
+        "summary=%s (trigger=%s keep_recent=%s max=%s tokens)",
         settings.AGENT_MAX_CONCURRENCY,
         settings.OLLAMA_NUM_CTX,
+        settings.AGENT_HISTORY_MAX_TOKENS,
         settings.AGENT_HISTORY_MAX_MESSAGES,
+        settings.AGENT_MAX_OUTPUT_TOKENS,
         "on" if settings.SUMMARY_ENABLED else "off",
-        settings.SUMMARY_TRIGGER_MESSAGES,
-        settings.SUMMARY_KEEP_RECENT_MESSAGES,
+        settings.SUMMARY_TRIGGER_TOKENS,
+        settings.SUMMARY_KEEP_RECENT_TOKENS,
+        settings.SUMMARY_MAX_TOKENS,
     )
 
     try:

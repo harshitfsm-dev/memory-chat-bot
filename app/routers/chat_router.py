@@ -14,6 +14,7 @@ from app.services.chat_service import (
     AgentExecutionError,
     AgentTimeoutError,
     ChatService,
+    MessageTooLongError,
     StreamChunk,
     ThreadNotFoundError,
 )
@@ -55,6 +56,13 @@ async def chat(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Thread not found",
+        ) from exc
+    except MessageTooLongError as exc:
+        # The message cannot fit the model's budget even on its own. Say so,
+        # rather than sending an unusable prompt and failing on the far side.
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Message is too long for the model. Please shorten it.",
         ) from exc
     except AgentTimeoutError as exc:
         raise HTTPException(
@@ -104,6 +112,12 @@ async def chat_stream(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Thread not found",
+        ) from exc
+    except MessageTooLongError as exc:
+        await generator.aclose()
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Message is too long for the model. Please shorten it.",
         ) from exc
     except PersistenceError as exc:
         await generator.aclose()

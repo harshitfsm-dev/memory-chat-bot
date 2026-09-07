@@ -34,20 +34,36 @@ You are given the notes so far (possibly empty) and the messages that came
 after them. Rewrite the notes so they cover both.
 
 Always keep:
-- Facts the user stated about themselves or their situation.
+- Facts the user stated about themselves, their data or their situation.
 - Exact names, numbers, codes and dates, copied character for character.
 - Decisions made, and questions the user asked that were never answered.
 
 Rules:
-- Write short third-person notes, one fact per line. Not dialogue, not prose.
+- Start every line with "User:" or "Assistant:" to record who said it. Getting
+  this wrong is the main way notes become useless: a fact with no owner leaves
+  the reader unable to tell what the user supplied and what was told to them.
+- One short fact per line. Not dialogue, not prose.
 - Never shorten or reword an identifier. A wrong number is worse than no number.
 - If the notes and a newer message disagree, the newer message is correct.
 - Reply with the notes only. Never answer or continue the conversation.
+
+Example:
+User: budget is 4500 EUR for the EU rollout.
+User: asked which database to use; not yet answered.
+Assistant: recommended Postgres over MySQL for JSONB support.
 """
 
 
 class TrimHistoryMiddleware(AgentMiddleware):
-    """Cap messages sent to the model during a single agent run."""
+    """Last-resort cap on messages sent to the model during a single run.
+
+    ChatService already fits the prompt to the same token budget before the run
+    starts, so this normally does nothing. It exists for growth *inside* a run,
+    where each tool call and result is appended and the model is called again.
+
+    It trims from the oldest end, which is where the thread summary sits. That is
+    acceptable for a backstop: if this fires the prompt was already in trouble.
+    """
 
     def __init__(self, max_tokens: int):
         super().__init__()

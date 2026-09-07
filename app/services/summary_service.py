@@ -6,7 +6,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph.state import CompiledStateGraph
 
 from app.db.unit_of_work import UnitOfWork
-from app.memory import render_for_summary
+from app.memory import count_tokens, render_for_summary, to_langchain
+from app.models.chat_message import ROLE_USER, ChatMessage
 from app.repositories.chat_message_repository import ChatMessageRepository
 from app.repositories.chat_thread_repository import ChatThreadRepository
 
@@ -20,12 +21,16 @@ class SummaryService:
     send the model, and the oldest ones are simply forgotten. Summarizing keeps
     the gist of them in a few lines instead.
 
-    How it decides:
-      * Count the messages the summary does not cover yet.
-      * If that is under `trigger_messages`, do nothing.
-      * Otherwise summarize all of them except the newest `keep_recent_messages`,
-        which stay word for word because follow-up questions refer to them
-        ("that one", "make it 5 instead").
+    How it decides, all in tokens rather than message counts:
+      * Add up the tokens the summary does not cover yet.
+      * If that is under `trigger_tokens`, do nothing.
+      * Otherwise summarize the oldest of them, keeping the newest
+        `keep_recent_tokens` word for word because follow-up questions refer to
+        them ("that one", "make it 5 instead").
+
+    Tokens matter here rather than message counts because a handful of pasted
+    documents can be larger than a hundred short replies. Counting messages
+    would let a thread blow past the prompt budget without ever triggering.
     """
 
     def __init__(
@@ -37,8 +42,9 @@ class SummaryService:
         agent_semaphore: asyncio.Semaphore,
         *,
         enabled: bool,
-        trigger_messages: int,
-        keep_recent_messages: int,
+        trigger_tokens: int,
+        keep_recent_tokens: int,
+        max_messages_per_run: int,
         timeout_seconds: float,
     ):
         self.chat_message_repo = chat_message_repo
@@ -47,8 +53,9 @@ class SummaryService:
         self.summary_agent = summary_agent
         self.agent_semaphore = agent_semaphore
         self.enabled = enabled
-        self.trigger_messages = trigger_messages
-        self.keep_recent_messages = keep_recent_messages
+        self.trigger_tokens = trigger_tokens
+        self.keep_recent_tokens = keep_recent_tokens
+        self.max_messages_per_run = max_messages_per_run
         self.timeout_seconds = timeout_seconds
 
     async def update_if_needed(
@@ -67,27 +74,20 @@ class SummaryService:
         if not self.enabled:
             return False
 
-        pending = await self.chat_message_repo.count_after(
+        pending = await self.chat_message_repo.get_recent_messages(
             thread_id=thread_id,
+            limit=self.max_messages_per_run,
             after_seq=summary_up_to_seq,
         )
-        if pending < self.trigger_messages:
+        if count_tokens(to_langchain(pending)) < self.trigger_tokens:
             return False
 
-        # Summarize everything except the newest few messages.
-        through_seq = summary_up_to_seq + (pending - self.keep_recent_messages)
-        if through_seq <= summary_up_to_seq:
+        to_summarize = self._pick_messages_to_summarize(pending)
+        if not to_summarize:
             return False
 
-        messages = await self.chat_message_repo.get_messages_in_range(
-            thread_id=thread_id,
-            after_seq=summary_up_to_seq,
-            through_seq=through_seq,
-        )
-        if not messages:
-            return False
-
-        transcript = render_for_summary(messages)
+        through_seq = to_summarize[-1].seq
+        transcript = render_for_summary(to_summarize)
 
         # This waits on the model while the database transaction stays open,
         # which holds a connection for a few seconds. Fine at this scale; a
@@ -107,12 +107,52 @@ class SummaryService:
         await self.uow.commit()
 
         logger.info(
-            "Summary updated: thread=%s up_to_seq=%s messages_summarized=%s",
+            "Summary updated: thread=%s up_to_seq=%s messages_summarized=%s "
+            "tokens_replaced=%s summary_tokens=%s",
             thread_id,
             through_seq,
-            len(messages),
+            len(to_summarize),
+            count_tokens(to_langchain(to_summarize)),
+            count_tokens([HumanMessage(content=summary)]),
         )
         return True
+
+    def _pick_messages_to_summarize(
+        self,
+        pending: list[ChatMessage],
+    ) -> list[ChatMessage]:
+        """Choose the oldest messages to fold into the summary.
+
+        Works backwards from the newest, holding back `keep_recent_tokens` worth
+        of messages to stay word for word. Everything older than that gets
+        summarized.
+
+        The cut is then moved forward until the next message is a user message,
+        so the summary always ends where an exchange ended. Cutting between a
+        question and its answer would leave the answer stranded at the start of
+        the replayed window, and a model shown a reply with no question misreads
+        who said what.
+
+        Returns an empty list when the newest messages already fill the
+        keep-recent allowance — nothing is old enough to summarize yet.
+        """
+        keep_from = len(pending)
+        kept_tokens = 0
+
+        for index in range(len(pending) - 1, -1, -1):
+            cost = count_tokens(to_langchain([pending[index]]))
+            if kept_tokens + cost > self.keep_recent_tokens:
+                break
+            kept_tokens += cost
+            keep_from = index
+
+        # Move forward to the next question. Forward rather than back, because
+        # moving back would often land on 0 and summarize nothing at all when
+        # one very large message sits at the start.
+        while keep_from < len(pending) and pending[keep_from].role != ROLE_USER:
+            keep_from += 1
+
+        return pending[:keep_from]
 
     async def _write_summary(
         self,

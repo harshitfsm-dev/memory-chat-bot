@@ -10,7 +10,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 from app.db.unit_of_work import UnitOfWork
-from app.memory import build_prompt
+from app.memory import build_prompt, count_tokens, fit_to_budget
 from app.models.chat_message import ROLE_ASSISTANT, ROLE_USER, ChatMessage
 from app.models.chat_thread import ChatThread
 from app.repositories.chat_message_repository import ChatMessageRepository
@@ -36,6 +36,14 @@ class AgentTimeoutError(AgentExecutionError):
 
 class ThreadNotFoundError(LookupError):
     """Raised when a thread does not exist or is not owned by the caller."""
+
+
+class MessageTooLongError(ValueError):
+    """Raised when a message cannot fit the model's token budget on its own.
+
+    Answering anyway is not an option: there would be no room for the message
+    itself, so the model would receive nothing useful.
+    """
 
 
 @dataclass(frozen=True)
@@ -79,6 +87,7 @@ class ChatService:
         recursion_limit: int,
         title_timeout_seconds: float,
         history_max_messages: int,
+        history_max_tokens: int,
     ):
         self.chat_message_repo = chat_message_repo
         self.chat_thread_repo = chat_thread_repo
@@ -91,6 +100,7 @@ class ChatService:
         self.recursion_limit = recursion_limit
         self.title_timeout_seconds = title_timeout_seconds
         self.history_max_messages = history_max_messages
+        self.history_max_tokens = history_max_tokens
 
     async def chat(
         self,
@@ -308,15 +318,46 @@ class ChatService:
         Two parts: the summary of older messages, and the most recent messages
         word for word. `summary_up_to_seq` keeps them from overlapping.
 
-        A brand new thread has no messages, so this simply returns the one new
+        Everything is measured in tokens. The new message and the summary are
+        counted first because both are mandatory, and whatever budget is left
+        decides how many older messages come along.
+
+        A brand new thread has no messages, so this returns just the one new
         message.
         """
+        # Reserve space for the parts we cannot drop.
+        required = build_prompt([], message, thread.summary)
+        required_tokens = count_tokens(required)
+        if required_tokens > self.history_max_tokens:
+            # Nothing sensible to send. Say so instead of letting the trim
+            # middleware hand the model an empty list, which makes the agent
+            # spin until it hits the recursion limit.
+            raise MessageTooLongError(
+                f"Message needs about {required_tokens} tokens but the budget "
+                f"is {self.history_max_tokens}"
+            )
+
         history = await self.chat_message_repo.get_recent_messages(
             thread_id=thread.id,
             limit=self.history_max_messages,
             after_seq=thread.summary_up_to_seq,
         )
-        return build_prompt(history, message, thread.summary)
+        kept = fit_to_budget(history, self.history_max_tokens - required_tokens)
+
+        if len(kept) < len(history):
+            # These messages are not covered by the summary and will not be seen
+            # by the model, so they are effectively forgotten. It means
+            # summarizing is not keeping pace: lower SUMMARY_TRIGGER_TOKENS or
+            # raise AGENT_HISTORY_MAX_TOKENS.
+            logger.warning(
+                "Dropped %s unsummarized message(s) for space: thread=%s "
+                "summary_up_to_seq=%s",
+                len(history) - len(kept),
+                thread.id,
+                thread.summary_up_to_seq,
+            )
+
+        return build_prompt(kept, message, thread.summary)
 
     async def _save_message(self, thread_id: str, role: str, content: str) -> None:
         """Append one message to the thread and commit it."""

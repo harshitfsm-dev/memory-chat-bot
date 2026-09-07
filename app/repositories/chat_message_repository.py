@@ -49,39 +49,6 @@ class ChatMessageRepository:
         messages.reverse()
         return messages
 
-    async def get_messages_in_range(
-        self,
-        thread_id: str,
-        after_seq: int,
-        through_seq: int,
-    ) -> list[ChatMessage]:
-        """Messages from `after_seq` (exclusive) to `through_seq` (inclusive).
-
-        Used to load the block of messages that is about to be summarized.
-        """
-        result = await self.db.execute(
-            select(ChatMessage)
-            .where(
-                ChatMessage.thread_id == thread_id,
-                ChatMessage.seq > after_seq,
-                ChatMessage.seq <= through_seq,
-            )
-            .order_by(ChatMessage.seq)
-        )
-        return list(result.scalars().all())
-
-    async def count_after(self, thread_id: str, after_seq: int) -> int:
-        """How many messages are not covered by the summary yet."""
-        result = await self.db.execute(
-            select(func.count())
-            .select_from(ChatMessage)
-            .where(
-                ChatMessage.thread_id == thread_id,
-                ChatMessage.seq > after_seq,
-            )
-        )
-        return result.scalar_one()
-
     async def next_seq(self, thread_id: str) -> int:
         """The position the next message in this thread should get.
 
