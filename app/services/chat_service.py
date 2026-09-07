@@ -16,6 +16,7 @@ from app.models.chat_thread import ChatThread
 from app.repositories.chat_message_repository import ChatMessageRepository
 from app.repositories.chat_thread_repository import ChatThreadRepository
 from app.services.summary_service import SummaryService
+from app.services.user_memory_service import UserMemoryService
 
 logger = logging.getLogger(__name__)
 
@@ -82,12 +83,14 @@ class ChatService:
         title_agent: CompiledStateGraph[Any, Any, Any, Any],
         agent_semaphore: asyncio.Semaphore,
         summary_service: SummaryService,
+        memory_service: UserMemoryService,
         *,
         timeout_seconds: float,
         recursion_limit: int,
         title_timeout_seconds: float,
         history_max_messages: int,
         history_max_tokens: int,
+        memory_max_tokens: int,
     ):
         self.chat_message_repo = chat_message_repo
         self.chat_thread_repo = chat_thread_repo
@@ -96,11 +99,13 @@ class ChatService:
         self.title_agent = title_agent
         self.agent_semaphore = agent_semaphore
         self.summary_service = summary_service
+        self.memory_service = memory_service
         self.timeout_seconds = timeout_seconds
         self.recursion_limit = recursion_limit
         self.title_timeout_seconds = title_timeout_seconds
         self.history_max_messages = history_max_messages
         self.history_max_tokens = history_max_tokens
+        self.memory_max_tokens = memory_max_tokens
 
     async def chat(
         self,
@@ -120,15 +125,17 @@ class ChatService:
         at the end would hold a connection for the whole model call, including
         time spent queueing for a slot.
         """
+        memories = await self._retrieve_memories(user_id=user_id, query=message)
         thread = await self._resolve_thread(
             message=message,
             user_id=user_id,
             thread_id=thread_id,
         )
 
-        # Load memory before saving the new message, or the new message would
-        # show up in its own history.
-        messages = await self._build_prompt(thread, message)
+        # Load short-term history before saving the new message, or the new
+        # message would show up in its own history. Long-term retrieval already
+        # completed and released its read transaction before thread/model work.
+        messages = await self._build_prompt(thread, message, memories)
 
         run_id = str(uuid.uuid4())
         config: RunnableConfig = {
@@ -147,7 +154,7 @@ class ChatService:
         # insert fails. Committing before generation also deliberately keeps
         # the user's turn when the agent later fails, so the transcript
         # reflects what they submitted.
-        await self._save_message(thread.id, ROLE_USER, message)
+        user_message = await self._save_message(thread.id, ROLE_USER, message)
 
         try:
             # This deadline includes time waiting for an Ollama execution slot.
@@ -177,7 +184,11 @@ class ChatService:
 
         # A failure here raises PersistenceError rather than returning the
         # answer, so the caller is never told a turn was stored when it wasn't.
-        await self._save_message(thread.id, ROLE_ASSISTANT, answer)
+        assistant_message = await self._save_message(
+            thread.id,
+            ROLE_ASSISTANT,
+            answer,
+        )
 
         logger.info(
             "Agent execution completed: run=%s thread=%s user=%s",
@@ -186,6 +197,12 @@ class ChatService:
             user_id,
         )
 
+        await self._update_memories(
+            user_id=user_id,
+            thread=thread,
+            user_message=user_message,
+            assistant_message=assistant_message,
+        )
         await self._update_summary(thread)
 
         return ChatResult(
@@ -213,12 +230,13 @@ class ChatService:
         tokens start flowing the HTTP status is already sent, so a mid-stream
         failure is surfaced as a terminal "error" chunk instead.
         """
+        memories = await self._retrieve_memories(user_id=user_id, query=message)
         thread = await self._resolve_thread(
             message=message,
             user_id=user_id,
             thread_id=thread_id,
         )
-        messages = await self._build_prompt(thread, message)
+        messages = await self._build_prompt(thread, message, memories)
 
         run_id = str(uuid.uuid4())
         config: RunnableConfig = {
@@ -235,7 +253,7 @@ class ChatService:
         # Commit the user's turn (and any new thread) before inference, exactly
         # as the non-streaming path does. A failure here propagates before the
         # stream opens, so the transport can still return an HTTP error.
-        await self._save_message(thread.id, ROLE_USER, message)
+        user_message = await self._save_message(thread.id, ROLE_USER, message)
 
         # Announce the resolved thread before tokens so the client can attach
         # them to the right (possibly brand-new) thread.
@@ -286,7 +304,11 @@ class ChatService:
         # client already has the text; log and still close with an error chunk
         # so the client knows the turn was not saved.
         try:
-            await self._save_message(thread.id, ROLE_ASSISTANT, answer)
+            assistant_message = await self._save_message(
+                thread.id,
+                ROLE_ASSISTANT,
+                answer,
+            )
         except Exception:
             logger.exception(
                 "Failed to persist streamed answer: run=%s thread=%s user=%s",
@@ -303,40 +325,107 @@ class ChatService:
             thread.id,
             user_id,
         )
+        # Attempt memory storage before `done`, so a completed stream cannot be
+        # cancelled after its terminal event but before long-term memory runs.
+        await self._update_memories(
+            user_id=user_id,
+            thread=thread,
+            user_message=user_message,
+            assistant_message=assistant_message,
+        )
         yield StreamChunk(type="done", text=answer)
 
-        # After the last chunk, so the client is not kept waiting for it.
+        # Summary maintenance stays after the last chunk to avoid delaying it.
         await self._update_summary(thread)
 
     async def _build_prompt(
         self,
         thread: ChatThread,
         message: str,
+        memories: tuple[tuple[str, ...], tuple[str, ...]],
     ) -> list[BaseMessage]:
-        """Load the thread's memory and turn it into the model's input.
-
-        Two parts: the summary of older messages, and the most recent messages
-        word for word. `summary_up_to_seq` keeps them from overlapping.
-
-        Everything is measured in tokens. The new message and the summary are
-        counted first because both are mandatory, and whatever budget is left
-        decides how many older messages come along.
-
-        A brand new thread has no messages, so this returns just the one new
-        message.
-        """
-        # Reserve space for the parts we cannot drop.
-        required = build_prompt([], message, thread.summary)
-        required_tokens = count_tokens(required)
-        if required_tokens > self.history_max_tokens:
-            # Nothing sensible to send. Say so instead of letting the trim
-            # middleware hand the model an empty list, which makes the agent
-            # spin until it hits the recursion limit.
+        """Build one prompt under both global and long-term-memory budgets."""
+        # Summary and the current user message are mandatory. Retrieval must
+        # never turn a message that previously fit into a 413 response.
+        base_required = build_prompt([], message, thread.summary)
+        base_tokens = count_tokens(base_required)
+        if base_tokens > self.history_max_tokens:
             raise MessageTooLongError(
-                f"Message needs about {required_tokens} tokens but the budget "
+                f"Message needs about {base_tokens} tokens but the budget "
                 f"is {self.history_max_tokens}"
             )
 
+        retrieved_facts, retrieved_episodes = memories
+        selected_facts: list[str] = []
+        selected_episodes: list[str] = []
+        memory_budget = min(
+            self.memory_max_tokens,
+            self.history_max_tokens - base_tokens,
+        )
+
+        # Recount the complete required prompt for every candidate. This makes
+        # the approximate-token threshold strict even after headings and the
+        # assistant acknowledgement are included. Facts are pinned and consume
+        # budget first; episodes are already ordered by cosine relevance.
+        for fact in retrieved_facts:
+            candidate_facts = (*selected_facts, fact)
+            candidate = build_prompt(
+                [],
+                message,
+                thread.summary,
+                candidate_facts,
+                (),
+            )
+            candidate_tokens = count_tokens(candidate)
+            if (
+                candidate_tokens > self.history_max_tokens
+                or candidate_tokens - base_tokens > memory_budget
+            ):
+                # Facts are pinned and key-ordered rather than relevance-ranked.
+                # A large fact must not prevent a later, shorter pinned fact
+                # from using the remaining budget.
+                continue
+            selected_facts.append(fact)
+
+        for episode in retrieved_episodes:
+            candidate_episodes = (*selected_episodes, episode)
+            candidate = build_prompt(
+                [],
+                message,
+                thread.summary,
+                tuple(selected_facts),
+                candidate_episodes,
+            )
+            candidate_tokens = count_tokens(candidate)
+            if (
+                candidate_tokens > self.history_max_tokens
+                or candidate_tokens - base_tokens > memory_budget
+            ):
+                # Do not skip a more relevant episode to admit a less relevant
+                # one. Retrieval order is part of the relevance guarantee.
+                break
+            selected_episodes.append(episode)
+
+        if len(selected_facts) < len(retrieved_facts) or len(selected_episodes) < len(
+            retrieved_episodes
+        ):
+            logger.info(
+                "Long-term memories dropped for token budget: thread=%s "
+                "facts=%s episodes=%s max_tokens=%s",
+                thread.id,
+                len(retrieved_facts) - len(selected_facts),
+                len(retrieved_episodes) - len(selected_episodes),
+                memory_budget,
+            )
+
+        required = build_prompt(
+            [],
+            message,
+            thread.summary,
+            tuple(selected_facts),
+            tuple(selected_episodes),
+        )
+        required_tokens = count_tokens(required)
         history = await self.chat_message_repo.get_recent_messages(
             thread_id=thread.id,
             limit=self.history_max_messages,
@@ -345,10 +434,6 @@ class ChatService:
         kept = fit_to_budget(history, self.history_max_tokens - required_tokens)
 
         if len(kept) < len(history):
-            # These messages are not covered by the summary and will not be seen
-            # by the model, so they are effectively forgotten. It means
-            # summarizing is not keeping pace: lower SUMMARY_TRIGGER_TOKENS or
-            # raise AGENT_HISTORY_MAX_TOKENS.
             logger.warning(
                 "Dropped %s unsummarized message(s) for space: thread=%s "
                 "summary_up_to_seq=%s",
@@ -357,18 +442,79 @@ class ChatService:
                 thread.summary_up_to_seq,
             )
 
-        return build_prompt(kept, message, thread.summary)
+        prompt = build_prompt(
+            kept,
+            message,
+            thread.summary,
+            tuple(selected_facts),
+            tuple(selected_episodes),
+        )
+        # Defensive final check: approximate token accounting is deterministic,
+        # so no assembled prompt may exceed the configured total budget.
+        if count_tokens(prompt) > self.history_max_tokens:
+            raise RuntimeError("Assembled chat prompt exceeded its token budget")
+        return prompt
 
-    async def _save_message(self, thread_id: str, role: str, content: str) -> None:
-        """Append one message to the thread and commit it."""
+    async def _retrieve_memories(
+        self,
+        *,
+        user_id: str,
+        query: str,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Best-effort retrieval shared by streaming and non-streaming chat."""
+        try:
+            return await self.memory_service.retrieve_for_prompt(
+                user_id=user_id,
+                query=query,
+            )
+        except Exception:
+            logger.warning(
+                "Could not prepare long-term memory: user=%s",
+                user_id,
+                exc_info=True,
+            )
+            return (), ()
+
+    async def _save_message(
+        self,
+        thread_id: str,
+        role: str,
+        content: str,
+    ) -> ChatMessage:
+        """Append one message, commit it, and retain its provenance ID."""
         seq = await self.chat_message_repo.next_seq(thread_id)
-        self.chat_message_repo.create(
+        saved = self.chat_message_repo.create(
             thread_id=thread_id,
             role=role,
             content=content,
             seq=seq,
         )
         await self.uow.commit()
+        return saved
+
+    async def _update_memories(
+        self,
+        *,
+        user_id: str,
+        thread: ChatThread,
+        user_message: ChatMessage,
+        assistant_message: ChatMessage,
+    ) -> None:
+        """Best-effort long-term memory after a complete durable turn."""
+        try:
+            await self.memory_service.process_turn(
+                user_id=user_id,
+                thread_id=thread.id,
+                user_message=user_message,
+                assistant_message=assistant_message,
+            )
+        except Exception:
+            logger.warning(
+                "Could not update long-term memory: thread=%s user=%s",
+                thread.id,
+                user_id,
+                exc_info=True,
+            )
 
     async def _update_summary(self, thread: ChatThread) -> None:
         """Refresh the thread's summary if it has grown enough.

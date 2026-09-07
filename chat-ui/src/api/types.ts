@@ -102,3 +102,17 @@ export interface MessageResponse {
   content: string;
   created_at: string;
 }
+
+/** User-visible long-term memory returned by the backend management API. */
+export interface MemoryItemResponse {
+  id: string;
+  memory_key: string | null;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserMemoriesResponse {
+  facts: MemoryItemResponse[];
+  episodes: MemoryItemResponse[];
+}

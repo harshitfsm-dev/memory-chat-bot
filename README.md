@@ -16,32 +16,46 @@ uv sync
 cp .env.example .env
 docker-compose up -d
 uv run alembic upgrade head
+ollama pull nomic-embed-text
 uv run uvicorn app.main:app --reload
 ```
 
-Open `http://127.0.0.1:8000/docs` for interactive API documentation.
+Also pull the chat and memory-extraction models configured in `.env`. Open
+`http://127.0.0.1:8000/docs` for interactive API documentation.
 
 ## Configuration
 
-| Variable                          | Required | Default                   |
-| --------------------------------- | -------- | ------------------------- |
-| `DATABASE_URL`                    | Yes      | —                         |
-| `JWT_SECRET_KEY`                  | Yes      | — (minimum 32 characters) |
-| `JWT_ALGORITHM`                   | No       | `HS256`                   |
-| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | No       | `30`                      |
-| `OLLAMA_AGENT_MODEL`              | No       | `deepseek-r1:14b`         |
-| `OLLAMA_SMALL_AGENT_MODEL`        | No       | `llama3.2:3b`             |
-| `OLLAMA_TEMPERATURE`              | No       | `0.7`                     |
-| `OLLAMA_TIMEOUT_SECONDS`          | No       | `30`                      |
-| `AGENT_TIMEOUT_SECONDS`           | No       | `90`                      |
-| `AGENT_MAX_CONCURRENCY`           | No       | `2`                       |
-| `AGENT_MAX_OUTPUT_TOKENS`         | No       | `1024`                    |
-| `AGENT_TITLE_TIMEOUT_SECONDS`     | No       | `15`                      |
-| `AGENT_TITLE_MAX_TOKENS`          | No       | `24`                      |
-| `AGENT_RECURSION_LIMIT`           | No       | `8`                       |
-| `AGENT_HISTORY_MAX_TOKENS`        | No       | `4000`                    |
-| `LOG_LEVEL`                       | No       | `INFO`                    |
-| `SQL_ECHO`                        | No       | `false`                   |
+| Variable                           | Required | Default                   |
+| ---------------------------------- | -------- | ------------------------- |
+| `DATABASE_URL`                     | Yes      | —                         |
+| `JWT_SECRET_KEY`                   | Yes      | — (minimum 32 characters) |
+| `JWT_ALGORITHM`                    | No       | `HS256`                   |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES`  | No       | `30`                      |
+| `OLLAMA_AGENT_MODEL`               | No       | `deepseek-r1:14b`         |
+| `OLLAMA_SMALL_AGENT_MODEL`         | No       | `llama3.2:3b`             |
+| `OLLAMA_MEMORY_MODEL`              | No       | `llama3.2:3b`             |
+| `OLLAMA_EMBEDDING_MODEL`           | No       | `nomic-embed-text:latest` |
+| `OLLAMA_TEMPERATURE`               | No       | `0.7`                     |
+| `OLLAMA_TIMEOUT_SECONDS`           | No       | `30`                      |
+| `MEMORY_ENABLED`                   | No       | `true`                    |
+| `MEMORY_TIMEOUT_SECONDS`           | No       | `45`                      |
+| `MEMORY_EXTRACTION_MAX_TOKENS`     | No       | `768`                     |
+| `MEMORY_MAX_ITEMS_PER_TURN`        | No       | `6`                       |
+| `MEMORY_MIN_CONFIDENCE`            | No       | `0.7`                     |
+| `MEMORY_RETRIEVAL_ENABLED`         | No       | `true`                    |
+| `MEMORY_RETRIEVAL_MIN_SIMILARITY`  | No       | `0.7`                     |
+| `MEMORY_RETRIEVAL_MAX_EPISODES`    | No       | `3`                       |
+| `MEMORY_RETRIEVAL_MAX_TOKENS`      | No       | `384`                     |
+| `AGENT_TIMEOUT_SECONDS`            | No       | `90`                      |
+| `AGENT_MAX_CONCURRENCY`            | No       | `2`                       |
+| `AGENT_MAX_OUTPUT_TOKENS`          | No       | `4096`                    |
+| `AGENT_TITLE_TIMEOUT_SECONDS`      | No       | `15`                      |
+| `AGENT_TITLE_MAX_TOKENS`           | No       | `24`                      |
+| `AGENT_RECURSION_LIMIT`            | No       | `8`                       |
+| `AGENT_HISTORY_MAX_TOKENS`         | No       | `10000`                   |
+| `AGENT_HISTORY_MAX_MESSAGES`       | No       | `40`                      |
+| `LOG_LEVEL`                        | No       | `INFO`                    |
+| `SQL_ECHO`                         | No       | `false`                   |
 
 Use a long, random JWT secret outside local development. Never commit `.env`.
 Production deployments should install the exact locked dependencies with `uv sync --frozen`.
@@ -60,8 +74,8 @@ A write that the database rejects returns `503` and is safe to retry.
 ## Transactions
 
 Repositories stage work on the request-scoped session; services decide when it
-becomes durable through `UnitOfWork`. A chat request therefore uses two
-transactions rather than one:
+becomes durable through `UnitOfWork`. A chat transcript therefore uses two
+transactions:
 
 1. The thread (when new) and the user's message commit together, so a failed
    insert cannot leave an empty thread behind.
@@ -74,8 +88,51 @@ execution slot. A single request-wide transaction would pin one for the full
 
 Committing before generation also means a user's turn survives a failed or
 timed-out response, so the transcript reflects what they actually submitted.
+Long-term memories, when extracted, are written together in a separate atomic
+transaction after both transcript messages are durable.
 
-The configured primary Ollama model must support native tool calling. Model execution is bounded by a shared concurrency limit, output-token cap, recursion limit, and total request timeout.
+The configured primary Ollama model must support native tool calling. Model
+execution is bounded by a shared concurrency limit, output-token cap, recursion
+limit, and total request timeout.
+
+## Long-term memory
+
+After every successfully persisted user/assistant turn, a deterministic Ollama
+call extracts only durable user facts and important episodes. The selected
+statements are batch-embedded into 768-dimensional vectors and stored in
+`user_memories` through pgvector:
+
+- Facts have normalized keys and replace an older value for the same user/key.
+- Episodes are independent events or decisions.
+- Every memory records the source thread and user-message provenance.
+- Extraction uses a fail-closed allowlist: response/explanation preferences and
+  software/technical facts, decisions, and milestones. The extractor emits only
+  enum-backed keys, canonical values, and event kinds; stored statements are
+  built from application constants, so model-authored prose is never embedded
+  or stored.
+- Extraction rejects transient chatter, assistant speculation, secrets, and
+  sensitive personal data.
+
+Extraction, embedding, and storage are best effort: failures are logged but do
+not invalidate the already-persisted assistant response. Streaming attempts the
+memory write before emitting its `done` event. This stage can add one extraction
+inference and one embedding request to a successful turn.
+
+Before each new turn, active facts are treated as the user's pinned memory set.
+The current message is embedded with the configured embedding model, and
+pgvector retrieves at most three active episodes from the same model whose
+cosine similarity is at least `MEMORY_RETRIEVAL_MIN_SIMILARITY`. Facts are
+ordered by stable key; episodes are ordered by similarity, with importance and
+recency used only as tie-breakers.
+
+Retrieved memory is injected as ephemeral factual context immediately before
+the current message and is never added to the transcript. It has a strict
+`MEMORY_RETRIEVAL_MAX_TOKENS` sub-budget inside
+`AGENT_HISTORY_MAX_TOKENS`: pinned facts consume the budget first, followed by
+relevant episodes. A more relevant episode is never skipped to fit a less
+relevant one. The current message always overrides conflicting memory, and
+retrieval/embedding failures fall back to ordinary chat without failing the
+request.
 
 ## Short-term memory
 
@@ -85,11 +142,14 @@ The agent stores nothing between requests. Memory is rebuilt on every turn from
 what is in the database, which means the prompt is always something you can go
 look at in SQL.
 
-Each turn sends the model three things, in this order:
+Each turn sends the model four things, in this order:
 
 1. A summary of the older messages, if the thread has one.
-2. As many recent messages as fit `AGENT_HISTORY_MAX_TOKENS`, word for word.
-3. The new message.
+2. As many recent messages as fit the remaining `AGENT_HISTORY_MAX_TOKENS`
+   budget, word for word.
+3. Pinned facts plus up to three relevant past episodes, within the strict
+   `MEMORY_RETRIEVAL_MAX_TOKENS` sub-budget.
+4. The new message.
 
 Everything is budgeted in **tokens**, not message counts, using LangChain's
 `count_tokens_approximately`. Counting messages looks simpler but breaks badly:

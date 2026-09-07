@@ -1,7 +1,8 @@
-import { Bot, Lock, MessagesSquare, SlidersHorizontal, User } from "lucide-react";
+import { Bot, Brain, Lock, MessagesSquare, SlidersHorizontal, User } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import { MemorySettingsPanel } from "@/components/nova/memory-settings-panel";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -30,6 +31,7 @@ const SECTIONS = [
   { id: "ai", label: "AI preferences", icon: Bot },
   { id: "personalization", label: "Personalization", icon: User },
   { id: "chat", label: "Chat", icon: MessagesSquare },
+  { id: "memory", label: "Memory", icon: Brain },
   { id: "privacy", label: "Privacy", icon: Lock },
 ] as const;
 
@@ -48,9 +50,7 @@ function Row({
     <div className="flex items-start justify-between gap-6 py-3">
       <div className="min-w-0">
         <p className="text-sm font-medium">{label}</p>
-        {description ? (
-          <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
-        ) : null}
+        {description ? <p className="mt-0.5 text-xs text-muted-foreground">{description}</p> : null}
       </div>
       <div className="shrink-0">{children}</div>
     </div>
@@ -88,7 +88,9 @@ export function SettingsDialog({
         <DialogHeader className="border-b px-5 py-4">
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
-            Preferences are stored locally in this browser for the preview.
+            {section === "memory"
+              ? "Long-term memories are stored on the server. Other preferences stay in this browser."
+              : "Preferences are stored locally in this browser for the preview."}
           </DialogDescription>
         </DialogHeader>
 
@@ -98,6 +100,8 @@ export function SettingsDialog({
               <button
                 key={id}
                 type="button"
+                aria-pressed={section === id}
+                aria-controls={`settings-panel-${id}`}
                 onClick={() => setSection(id)}
                 className={cn(
                   "flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 text-left text-[13.5px] transition-colors",
@@ -111,7 +115,12 @@ export function SettingsDialog({
             ))}
           </nav>
 
-          <div className="scrollbar-slim max-h-[52vh] min-w-0 flex-1 overflow-y-auto px-5 py-3">
+          <div
+            id={`settings-panel-${section}`}
+            role="region"
+            aria-label={`${SECTIONS.find((item) => item.id === section)?.label ?? "Settings"} settings`}
+            className="scrollbar-slim max-h-[52vh] min-w-0 flex-1 overflow-y-auto px-5 py-3"
+          >
             {section === "general" ? (
               <div className="divide-y">
                 <Row label="Theme" description="Match the system or pick a fixed appearance.">
@@ -302,6 +311,8 @@ export function SettingsDialog({
                 </Row>
               </div>
             ) : null}
+
+            {section === "memory" ? <MemorySettingsPanel /> : null}
 
             {section === "privacy" ? (
               <div className="divide-y">

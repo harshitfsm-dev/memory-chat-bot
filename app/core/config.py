@@ -21,8 +21,20 @@ class Settings(BaseSettings):
 
     OLLAMA_AGENT_MODEL: str = "deepseek-r1:14b"
     OLLAMA_SMALL_AGENT_MODEL: str = "llama3.2:3b"
+    OLLAMA_MEMORY_MODEL: str = "llama3.2:3b"
+    OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text:latest"
     OLLAMA_TEMPERATURE: float = Field(default=0.7, ge=0, le=2)
     OLLAMA_TIMEOUT_SECONDS: float = Field(default=30, gt=0)
+
+    MEMORY_ENABLED: bool = True
+    MEMORY_TIMEOUT_SECONDS: float = Field(default=45, gt=0)
+    MEMORY_EXTRACTION_MAX_TOKENS: int = Field(default=768, ge=128, le=4_096)
+    MEMORY_MAX_ITEMS_PER_TURN: int = Field(default=6, ge=1, le=12)
+    MEMORY_MIN_CONFIDENCE: float = Field(default=0.7, ge=0, le=1)
+    MEMORY_RETRIEVAL_ENABLED: bool = True
+    MEMORY_RETRIEVAL_MIN_SIMILARITY: float = Field(default=0.7, ge=0, le=1)
+    MEMORY_RETRIEVAL_MAX_EPISODES: int = Field(default=3, ge=0, le=3)
+    MEMORY_RETRIEVAL_MAX_TOKENS: int = Field(default=384, ge=64, le=1_024)
 
     OLLAMA_NUM_CTX: int = Field(default=16_384, ge=1_024)
     """How many tokens the model can read at once, prompt and reply together.

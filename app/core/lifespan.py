@@ -8,7 +8,9 @@ from app.agents import build_agent, build_summary_agent, build_title_agent
 from app.core.config import get_settings
 from app.core.security import JWTService, PasswordService
 from app.db.database import create_database
-from app.llm.ollama import create_ollama_model
+from app.llm.ollama import create_ollama_embeddings, create_ollama_model
+from app.models.user_memory import MEMORY_EMBEDDING_DIMENSIONS
+from app.schemas.user_memory import MemoryExtraction
 
 logger = logging.getLogger(__name__)
 
@@ -65,20 +67,46 @@ async def lifespan(app: FastAPI):
         num_predict=settings.SUMMARY_MAX_TOKENS,
         num_ctx=settings.OLLAMA_NUM_CTX,
     )
+    # Long-term memory extraction is deterministic and tool-free. Structured
+    # output lets Pydantic reject malformed facts before any database work.
+    memory_model = create_ollama_model(
+        model=settings.OLLAMA_MEMORY_MODEL,
+        temperature=0,
+        timeout_seconds=settings.MEMORY_TIMEOUT_SECONDS,
+        reasoning=False,
+        num_predict=settings.MEMORY_EXTRACTION_MAX_TOKENS,
+        num_ctx=settings.OLLAMA_NUM_CTX,
+    )
+    memory_embeddings = create_ollama_embeddings(
+        model=settings.OLLAMA_EMBEDDING_MODEL,
+        dimensions=MEMORY_EMBEDDING_DIMENSIONS,
+        timeout_seconds=settings.MEMORY_TIMEOUT_SECONDS,
+    )
 
     # Ollama model execution is the constrained resource. All agents share this
-    # limit so titles and summaries cannot overwhelm normal chat responses.
+    # limit so titles, summaries, and memory work cannot overwhelm normal chat.
     app.state.agent_semaphore = asyncio.Semaphore(settings.AGENT_MAX_CONCURRENCY)
+    # At most one memory job can contend for the global Ollama capacity. With
+    # the default global limit of two, an interactive chat always retains room.
+    app.state.memory_semaphore = asyncio.Semaphore(1)
     app.state.title_agent = build_title_agent(model=small_model)
     app.state.summary_agent = build_summary_agent(model=summary_model)
     app.state.agent = build_agent(
         model=model,
         history_max_tokens=settings.AGENT_HISTORY_MAX_TOKENS,
     )
+    app.state.memory_extractor = memory_model.with_structured_output(
+        MemoryExtraction,
+        method="json_schema",
+        include_raw=True,
+    )
+    app.state.memory_embeddings = memory_embeddings
     logger.info(
         "Agents initialized: max_concurrency=%s num_ctx=%s "
         "history_budget=%s tokens (row cap %s) output=%s "
-        "summary=%s (trigger=%s keep_recent=%s max=%s tokens)",
+        "summary=%s (trigger=%s keep_recent=%s max=%s tokens) "
+        "long_memory=%s (extractor=%s embeddings=%s max_items=%s) "
+        "retrieval=%s (similarity>=%.2f episodes<=%s tokens<=%s)",
         settings.AGENT_MAX_CONCURRENCY,
         settings.OLLAMA_NUM_CTX,
         settings.AGENT_HISTORY_MAX_TOKENS,
@@ -88,6 +116,14 @@ async def lifespan(app: FastAPI):
         settings.SUMMARY_TRIGGER_TOKENS,
         settings.SUMMARY_KEEP_RECENT_TOKENS,
         settings.SUMMARY_MAX_TOKENS,
+        "on" if settings.MEMORY_ENABLED else "off",
+        settings.OLLAMA_MEMORY_MODEL,
+        settings.OLLAMA_EMBEDDING_MODEL,
+        settings.MEMORY_MAX_ITEMS_PER_TURN,
+        "on" if settings.MEMORY_RETRIEVAL_ENABLED else "off",
+        settings.MEMORY_RETRIEVAL_MIN_SIMILARITY,
+        settings.MEMORY_RETRIEVAL_MAX_EPISODES,
+        settings.MEMORY_RETRIEVAL_MAX_TOKENS,
     )
 
     try:

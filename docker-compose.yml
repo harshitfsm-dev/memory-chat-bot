@@ -1,8 +1,8 @@
 services:
   postgres:
-    # Pinned to 16 because it's already present locally; the registry was
-    # unreachable at setup time. Bump to 17 once a pull succeeds if desired.
-    image: postgres:16
+    # PostgreSQL 16 with pgvector extension files installed. The Alembic
+    # migration enables the extension inside the application database.
+    image: pgvector/pgvector:0.8.1-pg16
     container_name: chatbot-postgres
     restart: unless-stopped
     environment:

@@ -66,7 +66,7 @@ class ChatMessage(Base):
     )
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
+        DateTime(timezone=True),
+        server_default=func.clock_timestamp(),
         nullable=False,
     )

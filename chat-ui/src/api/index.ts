@@ -26,3 +26,6 @@ export { listMessages, messageToChatMessage } from "./threads/list-messages";
 
 export { ApiError } from "./http";
 export type * from "./types";
+
+export { listMemories } from "./memories/list-memories";
+export { forgetMemory } from "./memories/forget-memory";

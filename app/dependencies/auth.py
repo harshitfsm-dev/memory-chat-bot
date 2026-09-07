@@ -42,6 +42,11 @@ class AuthDependency:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Inactive user",
             )
+
+        # Authentication is a read, but SQLAlchemy still opens a transaction.
+        # End it here so later Ollama embedding or generation cannot hold a
+        # pooled database connection for the duration of model work.
+        await db.commit()
         return user
 
 
