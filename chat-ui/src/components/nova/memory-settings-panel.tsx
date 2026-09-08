@@ -40,22 +40,6 @@ function formatDate(value: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
 }
 
-/**
- * Describe a note's validity window in the terms a reader cares about: whether it
- * is still in use, and for how much longer.
- *
- * Retrieval stops using an expired note immediately, but the row survives until it
- * is swept, so it can still appear here. Saying so is better than showing a past
- * date and leaving the reader to work out what it means.
- */
-function formatExpiry(validUntil: string | null): string | null {
-  if (!validUntil) return null;
-  const date = new Date(validUntil);
-  if (Number.isNaN(date.getTime())) return null;
-  if (date.getTime() <= Date.now()) return "Expired, no longer used";
-  return `Until ${formatDate(validUntil)}`;
-}
-
 interface MemoryGroupProps {
   title: string;
   description: string;
@@ -94,13 +78,9 @@ function MemoryGroup({
       ) : (
         <ul className="divide-y rounded-xl border" aria-label={title}>
           {items.map((memory) => {
-            // A fact carries a key, a note carries a category, an episode carries
-            // neither. Only one of these is ever set, so one badge covers all three.
+            // A fact carries a key, a note carries a category. Only one is ever
+            // set, so one badge covers both.
             const label = formatLabel(memory.memory_key ?? memory.category);
-            const expiry = formatExpiry(memory.valid_until);
-            // Shown in preference to the expiry when both exist: the date the thing
-            // happens is what a reader recognises, while the expiry is bookkeeping.
-            const when = memory.event_at ? formatDate(memory.event_at) : null;
             return (
               <li key={memory.id} className="flex items-start gap-3 px-3 py-3">
                 <div className="min-w-0 flex-1">
@@ -110,12 +90,6 @@ function MemoryGroup({
                     <time dateTime={memory.updated_at}>
                       Updated {formatDate(memory.updated_at)}
                     </time>
-                    {when ? (
-                      <span>
-                        &middot; Happens <time dateTime={memory.event_at!}>{when}</time>
-                      </span>
-                    ) : null}
-                    {expiry ? <span>&middot; {expiry}</span> : null}
                   </div>
                 </div>
                 <Button
@@ -141,7 +115,7 @@ function MemoryGroup({
 function MemoryLoadingState() {
   return (
     <div className="space-y-5" aria-label="Loading memories">
-      {[0, 1, 2].map((group) => (
+      {[0, 1].map((group) => (
         <div key={group} className="space-y-2">
           <Skeleton className="h-4 w-24" />
           <Skeleton className="h-16 w-full rounded-xl" />
@@ -209,7 +183,6 @@ export function MemorySettingsPanel() {
     current
       ? {
           facts: current.facts.filter((item) => item.id !== id),
-          episodes: current.episodes.filter((item) => item.id !== id),
           notes: current.notes.filter((item) => item.id !== id),
         }
       : current;
@@ -247,9 +220,7 @@ export function MemorySettingsPanel() {
     }
   };
 
-  const total = memories
-    ? memories.facts.length + memories.episodes.length + memories.notes.length
-    : 0;
+  const total = memories ? memories.facts.length + memories.notes.length : 0;
 
   return (
     <div className="space-y-5 py-3" aria-busy={loading}>
@@ -300,7 +271,7 @@ export function MemorySettingsPanel() {
         <div className="rounded-xl border border-dashed px-4 py-8 text-center">
           <p className="text-sm font-medium">No saved memories</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Preferences, decisions, and other things worth remembering will appear here.
+            Profile details and other things worth remembering will appear here.
           </p>
         </div>
       ) : null}
@@ -309,17 +280,9 @@ export function MemorySettingsPanel() {
         <div className="space-y-6" aria-live="polite">
           <MemoryGroup
             title="Facts"
-            description="Pinned preferences and ongoing technical context."
+            description="Pinned profile details, like your name and preferences."
             emptyText="No pinned facts are saved."
             items={memories.facts}
-            pendingId={pendingId}
-            onForget={openForgetDialog}
-          />
-          <MemoryGroup
-            title="Episodes"
-            description="Past technical decisions and milestones."
-            emptyText="No past episodes are saved."
-            items={memories.episodes}
             pendingId={pendingId}
             onForget={openForgetDialog}
           />

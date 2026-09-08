@@ -14,7 +14,6 @@ from app.db.unit_of_work import UnitOfWork
 from app.memory import build_prompt, count_tokens, fit_to_budget
 from app.models.chat_message import ROLE_ASSISTANT, ROLE_USER, ChatMessage
 from app.models.chat_thread import ChatThread
-from app.models.user_memory import MEMORY_TYPE_NOTE
 from app.repositories.chat_message_repository import ChatMessageRepository
 from app.repositories.chat_thread_repository import ChatThreadRepository
 from app.services.summary_service import SummaryService
@@ -471,13 +470,8 @@ class ChatService:
 
     @staticmethod
     def _notes_of(items: list[RetrievedMemory]) -> tuple[str, ...]:
-        """The note contents from a ranked contextual list, order preserved.
-
-        The contextual tier is notes only now, but the filter is kept explicit so
-        the prompt cannot accidentally be fed a non-note if the retrieval shape
-        ever changes again.
-        """
-        return tuple(item.content for item in items if item.kind == MEMORY_TYPE_NOTE)
+        """The note contents from a retrieved list, order preserved."""
+        return tuple(item.content for item in items)
 
     async def _retrieve_memories(
         self,

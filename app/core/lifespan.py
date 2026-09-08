@@ -115,9 +115,7 @@ async def lifespan(app: FastAPI):
         "history_budget=%s tokens (row cap %s) output=%s "
         "summary=%s (trigger=%s keep_recent=%s max=%s tokens) "
         "long_memory=%s (extractor=%s embeddings=%s max_items=%s) "
-        "retrieval=%s (similarity>=%.2f notes<=%s candidates=x%s "
-        "tokens<=%s weights=sim%.2f/imp%.2f/rec%.2f half_life=%.0fd) "
-        "consolidation=%s (trigger=%s notes similarity>=%.2f cap=%s)",
+        "retrieval=%s (similarity>=%.2f notes<=%s tokens<=%s)",
         settings.AGENT_MAX_CONCURRENCY,
         settings.OLLAMA_NUM_CTX,
         settings.AGENT_HISTORY_MAX_TOKENS,
@@ -134,16 +132,7 @@ async def lifespan(app: FastAPI):
         "on" if settings.MEMORY_RETRIEVAL_ENABLED else "off",
         settings.MEMORY_RETRIEVAL_MIN_SIMILARITY,
         settings.MEMORY_RETRIEVAL_MAX_NOTES,
-        settings.MEMORY_RETRIEVAL_CANDIDATE_FACTOR,
         settings.MEMORY_RETRIEVAL_MAX_TOKENS,
-        settings.MEMORY_SCORE_SIMILARITY_WEIGHT,
-        settings.MEMORY_SCORE_IMPORTANCE_WEIGHT,
-        settings.MEMORY_SCORE_RECENCY_WEIGHT,
-        settings.MEMORY_RECENCY_HALF_LIFE_DAYS,
-        "on" if settings.MEMORY_CONSOLIDATION_ENABLED else "off",
-        settings.MEMORY_CONSOLIDATION_TRIGGER_NOTES,
-        settings.MEMORY_CONSOLIDATION_SIMILARITY,
-        settings.MEMORY_MAX_ACTIVE_NOTES,
     )
 
     try:

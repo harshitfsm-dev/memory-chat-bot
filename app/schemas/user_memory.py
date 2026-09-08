@@ -40,6 +40,25 @@ the open, free-text tier for everything the profile cannot express.
 # sign the extractor captured a sentence rather than a value.
 MAX_FACT_VALUE_CHARS = 120
 
+# The sentence stored for each fact key. `{value}` is the user's own short value,
+# substituted in by the service after cleaning. Keeping this beside `MemoryKey`
+# keeps the two in sync: every key must have a template.
+FACT_TEMPLATES: dict[str, str] = {
+    "user_name": "The user's name is {value}.",
+    "user_location": "The user is located in {value}.",
+    "user_timezone": "The user's timezone is {value}.",
+    "occupation": "The user works in {value}.",
+    "hobby": "The user is interested in {value}.",
+    "current_goal": "The user's current goal is {value}.",
+    "dietary_preference": "The user's dietary preference is {value}.",
+    "preferred_response_style": "The user prefers {value} responses.",
+    "preferred_explanation_level": "The user prefers {value} explanations.",
+    "preferred_language": "The user prefers to communicate in {value}.",
+    "preferred_measurement_system": "The user prefers {value}.",
+    "communication_preference": "The user's communication preference: {value}.",
+}
+FACT_KEYS: frozenset[str] = frozenset(FACT_TEMPLATES)
+
 MemoryCategory = Literal[
     "goal",
     "plan",
@@ -68,32 +87,6 @@ MAX_NOTE_SUBJECT_CHARS = 80
 # discard every other memory from the same turn. Over-long items are rejected
 # individually by the service instead.
 SCHEMA_NOTE_CONTENT_CHARS = 600
-
-TimeReference = Literal[
-    "none",
-    "today",
-    "tomorrow",
-    "this_week",
-    "next_week",
-    "this_month",
-    "next_month",
-    "this_year",
-    "specific_date",
-]
-"""How a note's timing was expressed, as a coarse window rather than a date.
-
-The model classifies; the application computes. Asking a small model to turn "next
-month" into a date means handing it the current date, trusting its arithmetic, and
-storing whatever it returns — and a confidently wrong date is worse than no date,
-because it silently expires a memory early or keeps a finished one alive.
-
-A window is something a small model can get right. The application resolves it
-against the timestamp of the message that produced it, which is both correct and
-reproducible.
-
-`specific_date` is the escape hatch for when the user actually stated one, and even
-then the parsed value is only trusted if it parses.
-"""
 
 
 class ExtractedMemory(BaseModel):
@@ -145,25 +138,6 @@ class ExtractedMemory(BaseModel):
             "Leave empty for facts."
         ),
     )
-    time_reference: TimeReference = Field(
-        default="none",
-        description=(
-            "Notes only: when this happens, as a window. Use none when the user "
-            "gave no timing. Do not calculate dates."
-        ),
-    )
-    event_date: str = Field(
-        default="",
-        # Loose on purpose, like `content`. A date is ten characters, but rejecting
-        # anything longer here would fail the whole batch over one stray space. The
-        # service parses it strictly and falls back to no date if it cannot, which
-        # loses one field instead of every memory from the turn.
-        max_length=32,
-        description=(
-            "Notes only, and only with time_reference=specific_date: the date the "
-            "user stated, as YYYY-MM-DD. Leave empty otherwise."
-        ),
-    )
     confidence: float = Field(default=0.8, ge=0, le=1)
     importance: float = Field(default=0.5, ge=0, le=1)
     is_correction: bool = Field(
@@ -188,8 +162,6 @@ class ExtractedMemory(BaseModel):
             self.category = None
             self.subject = ""
             self.content = ""
-            self.time_reference = "none"
-            self.event_date = ""
         else:
             self.memory_key = None
             self.value = ""

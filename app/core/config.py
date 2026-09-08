@@ -4,12 +4,6 @@ from pathlib import Path
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.schemas.user_memory import (
-    MAX_FACT_VALUE_CHARS,
-    MAX_NOTE_CONTENT_CHARS,
-    SCHEMA_NOTE_CONTENT_CHARS,
-)
-
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
@@ -97,154 +91,17 @@ class Settings(BaseSettings):
     MEMORY_TIMEOUT_SECONDS: float = Field(default=45, gt=0)
     MEMORY_EXTRACTION_MAX_TOKENS: int = Field(default=768, ge=128, le=4_096)
     MEMORY_MAX_ITEMS_PER_TURN: int = Field(default=6, ge=1, le=12)
-    MEMORY_MIN_CONFIDENCE: float = Field(default=0.7, ge=0, le=1)
     MEMORY_RETRIEVAL_ENABLED: bool = True
 
     MEMORY_RETRIEVAL_MIN_SIMILARITY: float = Field(default=0.6, ge=0, le=1)
-    """Hard cosine gate applied in SQL before anything is ranked.
+    """Cosine gate for note retrieval: below this, a note is treated as unrelated.
 
-    Tied to OLLAMA_EMBEDDING_MODEL: cosine scores are not comparable across
-    embedding models, so this must be re-measured whenever that changes.
-
-    Measured against the stored sentence templates with `qwen3-embedding:4b` at
-    768 dimensions: relevant pairs score 0.61-0.78 and unrelated pairs top out
-    at 0.58, so 0.60 separates them cleanly. The previous 0.70 was inherited
-    from `nomic-embed-text`, whose relevant pairs score 0.34-0.74 — it dropped
-    most genuinely relevant notes.
+    Tied to OLLAMA_EMBEDDING_MODEL — cosine scores are not comparable across
+    embedding models, so re-measure this if that changes.
     """
 
     MEMORY_RETRIEVAL_MAX_NOTES: int = Field(default=3, ge=0, le=10)
-    """How many notes may reach the prompt after ranking.
-
-    Notes are the only relevance-retrieved tier; facts are pinned separately and
-    do not compete for these slots.
-    """
-
-    MEMORY_RETRIEVAL_CANDIDATE_FACTOR: int = Field(default=5, ge=1, le=20)
-    """How many candidates to fetch per prompt slot before ranking.
-
-    The cosine gate finds what is *similar*; the composite score below decides
-    what is *worth sending*. Those disagree, so the database has to return more
-    rows than the prompt will use or there is nothing to re-rank. Costs one
-    wider vector query, which the HNSW index already serves.
-    """
-
-    MEMORY_SCORE_SIMILARITY_WEIGHT: float = Field(default=0.6, ge=0, le=1)
-    MEMORY_SCORE_IMPORTANCE_WEIGHT: float = Field(default=0.25, ge=0, le=1)
-    MEMORY_SCORE_RECENCY_WEIGHT: float = Field(default=0.15, ge=0, le=1)
-    """Relative weights of the note ranking signals.
-
-    Only the ratios matter: the service normalizes them, so they need not sum to
-    one. All three zero falls back to pure similarity order.
-
-    Similarity leads because an irrelevant memory is worse than a missing one.
-    Importance and recency break the ties that similarity alone leaves, which is
-    where ordering by cosine distance previously made arbitrary choices.
-
-    Comparable only because similarity is first rescaled onto [0, 1] measured
-    from MEMORY_RETRIEVAL_MIN_SIMILARITY upwards. Scoring the raw cosine value
-    would quietly under-weight it, since passing scores sit in a narrow band
-    while importance and recency both range over the full interval.
-    """
-
-    MEMORY_RECENCY_HALF_LIFE_DAYS: float = Field(default=30, gt=0)
-    """Age at which a note's recency signal decays to half.
-
-    Decay is applied to the score, never to storage: nothing is deleted or
-    hidden, an old memory just needs to be more relevant to win a prompt slot.
-    """
-
-    MEMORY_NOTE_MAX_CHARS: int = Field(
-        default=MAX_NOTE_CONTENT_CHARS,
-        ge=40,
-        le=SCHEMA_NOTE_CONTENT_CHARS,
-    )
-    """Longest note that will be stored. Longer ones are rejected, not truncated.
-
-    Two jobs at once: it bounds what memory costs in every later prompt, and it
-    bounds how much user-authored text can be replayed back to the model. Notes are
-    the only tier whose text originates in the conversation, so this is the size of
-    that exposure.
-    """
-
-    MEMORY_FACT_VALUE_MAX_CHARS: int = Field(
-        default=MAX_FACT_VALUE_CHARS,
-        ge=8,
-        le=SCHEMA_NOTE_CONTENT_CHARS,
-    )
-    """Longest profile fact value (name, occupation, preference, ...) to store.
-
-    Facts are pinned into every prompt verbatim and never expire, so this is the
-    size of the user-authored text that gets replayed on every turn. Kept tight:
-    profile values are short by nature, and anything long is a sign the extractor
-    captured a sentence rather than a value. Longer values are rejected, not
-    truncated, so a clipped-and-wrong value is never pinned.
-    """
-
-    MEMORY_EVENT_GRACE_DAYS: int = Field(default=7, ge=0, le=365)
-    """How long a dated note stays usable after its event has passed.
-
-    Not zero, because the useful window does not close the moment the event does:
-    right after a trip is exactly when someone asks how it went. Not long either —
-    a past event asserted as upcoming is the failure this whole mechanism exists to
-    prevent.
-
-    Only applies when a date was actually extracted. Undated notes fall back to
-    their category's lifetime.
-    """
-
-    MEMORY_NOTE_DEDUPE_SIMILARITY: float = Field(default=0.9, ge=0, le=1)
-    """How alike two notes in one category must be to count as the same thing.
-
-    Higher than the retrieval gate on purpose. Retrieval asks "is this related?",
-    where a false positive costs one wasted prompt slot. This asks "is this the
-    same?", where a false positive silently overwrites a memory the user never
-    asked to replace.
-    """
-
-    MEMORY_CONSOLIDATION_ENABLED: bool = True
-    """Whether to periodically tidy a user's notes.
-
-    Off means notes accumulate: near-duplicates that write-time deduplication was
-    too strict to catch stay as separate rows, and expired ones linger until the
-    user deletes them. Retrieval stays correct either way — it filters expiry and
-    ranks by relevance — this only keeps the set from growing without bound.
-    """
-
-    MEMORY_CONSOLIDATION_TRIGGER_NOTES: int = Field(default=20, ge=2, le=1_000)
-    """Active notes a user must have before consolidation runs at all.
-
-    Consolidation is real work on the post-turn path, and a handful of notes cannot
-    be untidy enough to justify it. Same shape as SUMMARY_TRIGGER_TOKENS: do nothing
-    until there is something to do.
-    """
-
-    MEMORY_CONSOLIDATION_SIMILARITY: float = Field(default=0.93, ge=0, le=1)
-    """How alike two notes must be before consolidation will consider merging them.
-
-    Considers, not merges. Similarity is necessary and not sufficient here: a pair
-    must also pass a lexical identity check on dates, numbers, proper nouns and period
-    words, because cosine distance cannot tell "the same thing said twice" from "two
-    things that sound alike".
-
-    Measured on the sentence shapes actually stored, the two populations overlap
-    outright: paraphrases of one memory score 0.93-0.97, while pairs sharing only a
-    shape score 0.81-0.98. No cutoff separates them — the highest-scoring pair in the
-    whole sample, at 0.979, is "the launch is next week" against "next month".
-
-    So this is set at the bottom of the paraphrase range rather than in a gap, which
-    means it errs towards leaving duplicates alone. That is the correct direction: an
-    unmerged duplicate wastes a row, a wrong merge loses a memory.
-    """
-
-    MEMORY_MAX_ACTIVE_NOTES: int = Field(default=100, ge=10, le=10_000)
-    """Hard ceiling on a user's active notes.
-
-    The open tier is the only one without a natural bound: facts are capped by the
-    fixed key list, but anything can be a note. Beyond this, the least valuable are
-    retired — importance first, then
-    recency, the same signals ranking uses.
-    """
+    """How many notes reach the prompt. Facts are pinned separately."""
 
     MEMORY_RETRIEVAL_MAX_TOKENS: int = Field(default=384, ge=64, le=1_024)
 
