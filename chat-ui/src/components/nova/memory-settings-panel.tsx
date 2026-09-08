@@ -27,9 +27,10 @@ function errorMessage(error: unknown): string {
   return error instanceof ApiError ? error.message : "We couldn't update memory. Try again.";
 }
 
-function formatFactKey(key: string | null): string | null {
-  if (!key) return null;
-  const words = key.split("_").join(" ");
+/** Turn a snake_case fact key or note category into a readable label. */
+function formatLabel(value: string | null): string | null {
+  if (!value) return null;
+  const words = value.split("_").join(" ");
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
@@ -37,6 +38,22 @@ function formatDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Unknown date";
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
+}
+
+/**
+ * Describe a note's validity window in the terms a reader cares about: whether it
+ * is still in use, and for how much longer.
+ *
+ * Retrieval stops using an expired note immediately, but the row survives until it
+ * is swept, so it can still appear here. Saying so is better than showing a past
+ * date and leaving the reader to work out what it means.
+ */
+function formatExpiry(validUntil: string | null): string | null {
+  if (!validUntil) return null;
+  const date = new Date(validUntil);
+  if (Number.isNaN(date.getTime())) return null;
+  if (date.getTime() <= Date.now()) return "Expired, no longer used";
+  return `Until ${formatDate(validUntil)}`;
 }
 
 interface MemoryGroupProps {
@@ -77,16 +94,28 @@ function MemoryGroup({
       ) : (
         <ul className="divide-y rounded-xl border" aria-label={title}>
           {items.map((memory) => {
-            const factLabel = formatFactKey(memory.memory_key);
+            // A fact carries a key, a note carries a category, an episode carries
+            // neither. Only one of these is ever set, so one badge covers all three.
+            const label = formatLabel(memory.memory_key ?? memory.category);
+            const expiry = formatExpiry(memory.valid_until);
+            // Shown in preference to the expiry when both exist: the date the thing
+            // happens is what a reader recognises, while the expiry is bookkeeping.
+            const when = memory.event_at ? formatDate(memory.event_at) : null;
             return (
               <li key={memory.id} className="flex items-start gap-3 px-3 py-3">
                 <div className="min-w-0 flex-1">
                   <p className="text-sm leading-5">{memory.content}</p>
                   <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    {factLabel ? <Badge variant="secondary">{factLabel}</Badge> : null}
+                    {label ? <Badge variant="secondary">{label}</Badge> : null}
                     <time dateTime={memory.updated_at}>
                       Updated {formatDate(memory.updated_at)}
                     </time>
+                    {when ? (
+                      <span>
+                        &middot; Happens <time dateTime={memory.event_at!}>{when}</time>
+                      </span>
+                    ) : null}
+                    {expiry ? <span>&middot; {expiry}</span> : null}
                   </div>
                 </div>
                 <Button
@@ -112,7 +141,7 @@ function MemoryGroup({
 function MemoryLoadingState() {
   return (
     <div className="space-y-5" aria-label="Loading memories">
-      {[0, 1].map((group) => (
+      {[0, 1, 2].map((group) => (
         <div key={group} className="space-y-2">
           <Skeleton className="h-4 w-24" />
           <Skeleton className="h-16 w-full rounded-xl" />
@@ -174,6 +203,17 @@ export function MemorySettingsPanel() {
     setSelectedMemory(memory);
   };
 
+  // Prunes every group, because the caller does not know which one held the id.
+  // Kept in one place so adding a group cannot leave a stale row on screen.
+  const withoutMemory = (id: string) => (current: UserMemoriesResponse | null) =>
+    current
+      ? {
+          facts: current.facts.filter((item) => item.id !== id),
+          episodes: current.episodes.filter((item) => item.id !== id),
+          notes: current.notes.filter((item) => item.id !== id),
+        }
+      : current;
+
   const handleForget = async () => {
     if (!selectedMemory || pendingId) return;
 
@@ -183,28 +223,14 @@ export function MemorySettingsPanel() {
     try {
       await forgetMemory(memory.id, memory.updated_at);
       committedMutationSeq.current += 1;
-      setMemories((current) =>
-        current
-          ? {
-              facts: current.facts.filter((item) => item.id !== memory.id),
-              episodes: current.episodes.filter((item) => item.id !== memory.id),
-            }
-          : current,
-      );
+      setMemories(withoutMemory(memory.id));
       setSelectedMemory(null);
       toast.success("Memory forgotten");
     } catch (error) {
       const message = errorMessage(error);
       if (error instanceof ApiError && error.status === 404) {
         committedMutationSeq.current += 1;
-        setMemories((current) =>
-          current
-            ? {
-                facts: current.facts.filter((item) => item.id !== memory.id),
-                episodes: current.episodes.filter((item) => item.id !== memory.id),
-              }
-            : current,
-        );
+        setMemories(withoutMemory(memory.id));
         setSelectedMemory(null);
         setReloadVersion((version) => version + 1);
         toast.error("That memory is no longer available. Refreshing the list.");
@@ -221,14 +247,17 @@ export function MemorySettingsPanel() {
     }
   };
 
-  const total = memories ? memories.facts.length + memories.episodes.length : 0;
+  const total = memories
+    ? memories.facts.length + memories.episodes.length + memories.notes.length
+    : 0;
 
   return (
     <div className="space-y-5 py-3" aria-busy={loading}>
       <div>
         <h2 className="text-base font-semibold">Long-term memory</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Review facts and past decisions Nova may use in future responses.
+          Review what Nova may use in future responses, and forget anything you'd rather it didn't
+          keep.
         </p>
       </div>
 
@@ -271,7 +300,7 @@ export function MemorySettingsPanel() {
         <div className="rounded-xl border border-dashed px-4 py-8 text-center">
           <p className="text-sm font-medium">No saved memories</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Durable preferences and technical decisions will appear here.
+            Preferences, decisions, and other things worth remembering will appear here.
           </p>
         </div>
       ) : null}
@@ -291,6 +320,14 @@ export function MemorySettingsPanel() {
             description="Past technical decisions and milestones."
             emptyText="No past episodes are saved."
             items={memories.episodes}
+            pendingId={pendingId}
+            onForget={openForgetDialog}
+          />
+          <MemoryGroup
+            title="Notes"
+            description="Other things you mentioned, in your own words. Worth a read."
+            emptyText="No notes are saved."
+            items={memories.notes}
             pendingId={pendingId}
             onForget={openForgetDialog}
           />

@@ -1,7 +1,10 @@
 from datetime import datetime
 
 from app.db.unit_of_work import UnitOfWork
-from app.models.user_memory import MEMORY_TYPE_EPISODE, MEMORY_TYPE_FACT
+from app.models.user_memory import (
+    MEMORY_TYPE_FACT,
+    MEMORY_TYPE_NOTE,
+)
 from app.repositories.user_memory_repository import UserMemoryRepository
 from app.schemas.user_memory import MemoryItemResponse, UserMemoriesResponse
 
@@ -26,20 +29,30 @@ class UserMemoryControlService:
         self.uow = uow
 
     async def list_active(self, *, user_id: str) -> UserMemoriesResponse:
-        """Return the user's active facts and episodes without internal fields."""
+        """Return the user's active memories, grouped, without internal fields.
+
+        Both tiers are surfaced so someone can read back everything the system
+        holds about them and delete anything that should never have been kept,
+        which makes this listing part of the privacy story rather than a
+        convenience.
+        """
         try:
             rows = await self.repository.get_all_active(user_id=user_id)
-            facts = [
-                MemoryItemResponse.model_validate(memory)
-                for memory in rows
-                if memory.memory_type == MEMORY_TYPE_FACT
-            ]
-            episodes = [
-                MemoryItemResponse.model_validate(memory)
-                for memory in rows
-                if memory.memory_type == MEMORY_TYPE_EPISODE
-            ]
-            response = UserMemoriesResponse(facts=facts, episodes=episodes)
+            grouped = {
+                memory_type: [
+                    MemoryItemResponse.model_validate(memory)
+                    for memory in rows
+                    if memory.memory_type == memory_type
+                ]
+                for memory_type in (
+                    MEMORY_TYPE_FACT,
+                    MEMORY_TYPE_NOTE,
+                )
+            }
+            response = UserMemoriesResponse(
+                facts=grouped[MEMORY_TYPE_FACT],
+                notes=grouped[MEMORY_TYPE_NOTE],
+            )
             # End the read transaction so the pooled connection is released.
             await self.uow.commit()
             return response

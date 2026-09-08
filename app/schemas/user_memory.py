@@ -7,113 +7,162 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 MAX_EXTRACTED_MEMORIES = 12
 
 MemoryKey = Literal[
+    # Identity.
+    "user_name",
+    "user_location",
+    "user_timezone",
+    # Life context.
+    "occupation",
+    "hobby",
+    "current_goal",
+    "dietary_preference",
+    # How the assistant should talk to them.
     "preferred_response_style",
     "preferred_explanation_level",
-    "preferred_programming_language",
-    "preferred_framework",
-    "preferred_library",
-    "preferred_tool",
-    "preferred_operating_system",
-    "preferred_code_style",
-    "current_technical_goal",
-    "current_technical_project",
-    "recurring_technical_constraint",
+    "preferred_language",
+    "preferred_measurement_system",
+    "communication_preference",
 ]
-CanonicalMemoryValue = Literal[
-    "concise",
-    "brief",
-    "detailed",
-    "step_by_step",
-    "example_driven",
-    "direct",
-    "beginner",
-    "intermediate",
-    "advanced",
-    "python",
-    "javascript",
-    "typescript",
-    "java",
-    "kotlin",
-    "swift",
-    "rust",
-    "cpp",
-    "csharp",
-    "ruby",
-    "php",
-    "fastapi",
-    "django",
-    "flask",
-    "react",
-    "vue",
-    "angular",
-    "nextjs",
-    "spring",
-    "express",
-    "nestjs",
-    "langchain",
-    "langgraph",
-    "sqlalchemy",
-    "pydantic",
-    "numpy",
-    "pandas",
-    "docker",
-    "kubernetes",
-    "git",
-    "ollama",
-    "kiro",
-    "vscode",
-    "bun",
-    "uv",
-    "macos",
-    "linux",
-    "windows",
-    "typed",
-    "functional",
-    "object_oriented",
-    "asynchronous",
-    "documented",
-    "test_driven",
-    "apis",
-    "backend",
-    "frontend",
-    "databases",
-    "postgresql",
-    "mysql",
-    "sqlite",
-    "sql",
-    "language_models",
-    "machine_learning",
-    "generative_ai",
-    "chatbots",
-    "cloud",
-    "testing",
+"""The complete, fixed set of long-term profile fields.
+
+This is the whole fact tier now: a small, closed list of stable things worth
+knowing about a person and pinning into every prompt. It is closed so the tier
+stays bounded — one row per key per user — and predictable, not to constrain the
+*value*. Each key holds the user's own free text (see the note on `value` in
+``ExtractedMemory``); the list of keys is fixed, the values are not.
+
+Anything that is not one of these is not a fact. It belongs in a note, which is
+the open, free-text tier for everything the profile cannot express.
+"""
+
+# Facts are pinned into every prompt verbatim, so their value is bounded tightly:
+# a name, a place, an occupation, a preference is short, and anything long is a
+# sign the extractor captured a sentence rather than a value.
+MAX_FACT_VALUE_CHARS = 120
+
+MemoryCategory = Literal[
+    "goal",
+    "plan",
+    "event",
+    "project",
+    "constraint",
+    "interest",
+    "other",
 ]
-EpisodeKind = Literal["decision", "started", "completed", "deployed", "milestone"]
+"""Closed routing dimension for notes.
+
+Small on purpose: this is the one judgement a small extraction model has to make
+consistently across turns. It decides a note's expiry horizon and how it is
+displayed. `other` is the escape hatch that stops an unclassifiable-but-important
+detail from being dropped.
+"""
+
+# The real policy limit on a note, applied by the service after whitespace is
+# normalized. Bounds both prompt cost and the amount of user-authored text that
+# can be replayed into a later prompt.
+MAX_NOTE_CONTENT_CHARS = 200
+MAX_NOTE_SUBJECT_CHARS = 80
+
+# The schema limit is deliberately looser than the policy limit. Pydantic
+# validates the whole batch at once, so a hard cap here would let one long note
+# discard every other memory from the same turn. Over-long items are rejected
+# individually by the service instead.
+SCHEMA_NOTE_CONTENT_CHARS = 600
+
+TimeReference = Literal[
+    "none",
+    "today",
+    "tomorrow",
+    "this_week",
+    "next_week",
+    "this_month",
+    "next_month",
+    "this_year",
+    "specific_date",
+]
+"""How a note's timing was expressed, as a coarse window rather than a date.
+
+The model classifies; the application computes. Asking a small model to turn "next
+month" into a date means handing it the current date, trusting its arithmetic, and
+storing whatever it returns — and a confidently wrong date is worse than no date,
+because it silently expires a memory early or keeps a finished one alive.
+
+A window is something a small model can get right. The application resolves it
+against the timestamp of the message that produced it, which is both correct and
+reproducible.
+
+`specific_date` is the escape hatch for when the user actually stated one, and even
+then the parsed value is only trusted if it parses.
+"""
 
 
 class ExtractedMemory(BaseModel):
-    """One bounded memory candidate produced from a completed chat turn."""
+    """One bounded memory candidate produced from a completed chat turn.
 
-    memory_type: Literal["fact", "episode"]
+    Two shapes share this model:
+
+    - Facts are one of the fixed profile keys with the user's own short value.
+      The value is free text, so it is sanitized before it is pinned.
+    - Notes are a category, a short subject, and a free-text sentence. They are
+      also sanitized, and additionally expiry-checked and never pinned.
+
+    Both tiers carry user-authored text, so both are cleaned and filtered by the
+    service before storage. The old closed-vocabulary fact/episode machinery is
+    gone: there is no generated-from-a-vocabulary tier any more.
+    """
+
+    memory_type: Literal["fact", "note"]
     memory_key: MemoryKey | None = Field(
-        description="Canonical fact key; null for episodes",
+        default=None,
+        description="Profile fact key; null for notes",
     )
-    canonical_values: list[CanonicalMemoryValue] = Field(
-        min_length=1,
-        max_length=8,
-        description="Only explicitly affirmed values from the allowed vocabulary",
+    value: str = Field(
+        default="",
+        # Loose here on purpose: the schema keeps the whole batch alive and the
+        # service applies the real cap, so one over-long value cannot discard the
+        # rest of the turn.
+        max_length=SCHEMA_NOTE_CONTENT_CHARS,
+        description=(
+            "Facts only: the user's own value for this key, e.g. 'Alex', 'Berlin', "
+            "'concise', 'vegetarian'. Keep it short — just the value, not a "
+            "sentence. Leave empty for notes."
+        ),
+    )
+    category: MemoryCategory | None = Field(
+        default=None,
+        description="Required for notes; null for facts",
+    )
+    subject: str = Field(
+        default="",
+        max_length=MAX_NOTE_SUBJECT_CHARS,
+        description="Notes only: a few words naming what this is about",
     )
     content: str = Field(
         default="",
-        exclude=True,
+        max_length=SCHEMA_NOTE_CONTENT_CHARS,
         description=(
-            "Internal canonical sentence; extractor-provided values are ignored and "
-            "the application always overwrites it before persistence"
+            "Notes only: one short third-person sentence stating what to remember. "
+            "Leave empty for facts."
         ),
     )
-    episode_kind: EpisodeKind | None = Field(
-        default=None,
-        description="Technical event kind; null for facts",
+    time_reference: TimeReference = Field(
+        default="none",
+        description=(
+            "Notes only: when this happens, as a window. Use none when the user "
+            "gave no timing. Do not calculate dates."
+        ),
+    )
+    event_date: str = Field(
+        default="",
+        # Loose on purpose, like `content`. A date is ten characters, but rejecting
+        # anything longer here would fail the whole batch over one stray space. The
+        # service parses it strictly and falls back to no date if it cannot, which
+        # loses one field instead of every memory from the turn.
+        max_length=32,
+        description=(
+            "Notes only, and only with time_reference=specific_date: the date the "
+            "user stated, as YYYY-MM-DD. Leave empty otherwise."
+        ),
     )
     confidence: float = Field(default=0.8, ge=0, le=1)
     importance: float = Field(default=0.5, ge=0, le=1)
@@ -127,15 +176,24 @@ class ExtractedMemory(BaseModel):
 
     @model_validator(mode="after")
     def fields_match_memory_type(self) -> "ExtractedMemory":
+        """Strip fields that do not belong to this shape, without rejecting.
+
+        Deliberately coercive rather than strict. Pydantic validates the whole
+        batch, so raising here would throw away every memory from a turn because
+        one candidate was malformed. Anything still unusable after this (a fact
+        with no key or no value, a note with no category or no content) is dropped
+        individually by the service, which can log it and keep the rest.
+        """
         if self.memory_type == "fact":
-            if self.memory_key is None:
-                raise ValueError("facts require a memory_key")
-            self.episode_kind = None
+            self.category = None
+            self.subject = ""
+            self.content = ""
+            self.time_reference = "none"
+            self.event_date = ""
         else:
             self.memory_key = None
+            self.value = ""
             self.is_correction = False
-            if self.episode_kind is None:
-                self.episode_kind = "milestone"
         return self
 
 
@@ -153,7 +211,11 @@ class MemoryItemResponse(BaseModel):
 
     id: UUID
     memory_key: MemoryKey | None
+    category: MemoryCategory | None
+    subject: str | None
     content: str
+    event_at: datetime | None
+    valid_until: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -161,7 +223,13 @@ class MemoryItemResponse(BaseModel):
 
 
 class UserMemoriesResponse(BaseModel):
-    """All active long-term memories grouped by their user-facing meaning."""
+    """All active long-term memories, grouped by tier.
+
+    Two groups now: the fixed profile facts, and the open-ended notes. Both are
+    shown so someone can read back everything the system holds about them and
+    delete anything that should not have been kept — which makes this listing part
+    of the privacy story, not just a convenience.
+    """
 
     facts: list[MemoryItemResponse]
-    episodes: list[MemoryItemResponse]
+    notes: list[MemoryItemResponse]

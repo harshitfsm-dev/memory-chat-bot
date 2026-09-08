@@ -36,10 +36,15 @@ async def lifespan(app: FastAPI):
 
     # num_ctx is passed explicitly: Ollama otherwise uses its own default and
     # silently trims anything longer off the front of the prompt.
+    #
+    # reasoning is passed explicitly rather than left to the model's default. A
+    # thinking block delays the first streamed token and consumes the same
+    # num_predict budget the visible answer needs.
     model = create_ollama_model(
         model=settings.OLLAMA_AGENT_MODEL,
         temperature=settings.OLLAMA_TEMPERATURE,
         timeout_seconds=settings.OLLAMA_TIMEOUT_SECONDS,
+        reasoning=settings.OLLAMA_AGENT_REASONING,
         num_predict=settings.AGENT_MAX_OUTPUT_TOKENS,
         num_ctx=settings.OLLAMA_NUM_CTX,
     )
@@ -59,6 +64,10 @@ async def lifespan(app: FastAPI):
     # reasoning=False matters here. num_predict is only SUMMARY_MAX_TOKENS, and a
     # reasoning model will spend that budget thinking and return nothing at all.
     # Summarizing needs no reasoning: it is copying facts out of a transcript.
+    #
+    # This only helps on a model that honours it. A reasoning-only model returns
+    # an empty summary instead, which is why OLLAMA_AGENT_MODEL must be a model
+    # that can turn thinking off.
     summary_model = create_ollama_model(
         model=settings.OLLAMA_AGENT_MODEL,
         temperature=settings.OLLAMA_TEMPERATURE,
@@ -106,7 +115,9 @@ async def lifespan(app: FastAPI):
         "history_budget=%s tokens (row cap %s) output=%s "
         "summary=%s (trigger=%s keep_recent=%s max=%s tokens) "
         "long_memory=%s (extractor=%s embeddings=%s max_items=%s) "
-        "retrieval=%s (similarity>=%.2f episodes<=%s tokens<=%s)",
+        "retrieval=%s (similarity>=%.2f notes<=%s candidates=x%s "
+        "tokens<=%s weights=sim%.2f/imp%.2f/rec%.2f half_life=%.0fd) "
+        "consolidation=%s (trigger=%s notes similarity>=%.2f cap=%s)",
         settings.AGENT_MAX_CONCURRENCY,
         settings.OLLAMA_NUM_CTX,
         settings.AGENT_HISTORY_MAX_TOKENS,
@@ -122,8 +133,17 @@ async def lifespan(app: FastAPI):
         settings.MEMORY_MAX_ITEMS_PER_TURN,
         "on" if settings.MEMORY_RETRIEVAL_ENABLED else "off",
         settings.MEMORY_RETRIEVAL_MIN_SIMILARITY,
-        settings.MEMORY_RETRIEVAL_MAX_EPISODES,
+        settings.MEMORY_RETRIEVAL_MAX_NOTES,
+        settings.MEMORY_RETRIEVAL_CANDIDATE_FACTOR,
         settings.MEMORY_RETRIEVAL_MAX_TOKENS,
+        settings.MEMORY_SCORE_SIMILARITY_WEIGHT,
+        settings.MEMORY_SCORE_IMPORTANCE_WEIGHT,
+        settings.MEMORY_SCORE_RECENCY_WEIGHT,
+        settings.MEMORY_RECENCY_HALF_LIFE_DAYS,
+        "on" if settings.MEMORY_CONSOLIDATION_ENABLED else "off",
+        settings.MEMORY_CONSOLIDATION_TRIGGER_NOTES,
+        settings.MEMORY_CONSOLIDATION_SIMILARITY,
+        settings.MEMORY_MAX_ACTIVE_NOTES,
     )
 
     try:

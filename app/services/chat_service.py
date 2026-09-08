@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from datetime import datetime, timezone
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -13,10 +14,11 @@ from app.db.unit_of_work import UnitOfWork
 from app.memory import build_prompt, count_tokens, fit_to_budget
 from app.models.chat_message import ROLE_ASSISTANT, ROLE_USER, ChatMessage
 from app.models.chat_thread import ChatThread
+from app.models.user_memory import MEMORY_TYPE_NOTE
 from app.repositories.chat_message_repository import ChatMessageRepository
 from app.repositories.chat_thread_repository import ChatThreadRepository
 from app.services.summary_service import SummaryService
-from app.services.user_memory_service import UserMemoryService
+from app.services.user_memory_service import RetrievedMemory, UserMemoryService
 
 logger = logging.getLogger(__name__)
 
@@ -342,12 +344,17 @@ class ChatService:
         self,
         thread: ChatThread,
         message: str,
-        memories: tuple[tuple[str, ...], tuple[str, ...]],
+        memories: tuple[tuple[str, ...], tuple[RetrievedMemory, ...]],
     ) -> list[BaseMessage]:
         """Build one prompt under both global and long-term-memory budgets."""
+        # One date for every call below. The date lengthens the memory preamble, so
+        # a value that changed mid-way would make the budget probes measure a
+        # different prompt from the one actually sent.
+        today = datetime.now(timezone.utc).date()
+
         # Summary and the current user message are mandatory. Retrieval must
         # never turn a message that previously fit into a 413 response.
-        base_required = build_prompt([], message, thread.summary)
+        base_required = build_prompt([], message, thread.summary, today=today)
         base_tokens = count_tokens(base_required)
         if base_tokens > self.history_max_tokens:
             raise MessageTooLongError(
@@ -355,9 +362,9 @@ class ChatService:
                 f"is {self.history_max_tokens}"
             )
 
-        retrieved_facts, retrieved_episodes = memories
+        retrieved_facts, retrieved_contextual = memories
         selected_facts: list[str] = []
-        selected_episodes: list[str] = []
+        selected_contextual: list[RetrievedMemory] = []
         memory_budget = min(
             self.memory_max_tokens,
             self.history_max_tokens - base_tokens,
@@ -366,7 +373,8 @@ class ChatService:
         # Recount the complete required prompt for every candidate. This makes
         # the approximate-token threshold strict even after headings and the
         # assistant acknowledgement are included. Facts are pinned and consume
-        # budget first; episodes are already ordered by cosine relevance.
+        # budget first; both lists arrive ranked, so the budget is spent on the
+        # highest-value items rather than on whatever happens to come first.
         for fact in retrieved_facts:
             candidate_facts = (*selected_facts, fact)
             candidate = build_prompt(
@@ -375,46 +383,50 @@ class ChatService:
                 thread.summary,
                 candidate_facts,
                 (),
+                today=today,
             )
             candidate_tokens = count_tokens(candidate)
             if (
                 candidate_tokens > self.history_max_tokens
                 or candidate_tokens - base_tokens > memory_budget
             ):
-                # Facts are pinned and key-ordered rather than relevance-ranked.
-                # A large fact must not prevent a later, shorter pinned fact
-                # from using the remaining budget.
+                # Skip rather than stop: one oversized fact must not deny the
+                # remaining budget to shorter, still-important facts behind it.
                 continue
             selected_facts.append(fact)
 
-        for episode in retrieved_episodes:
-            candidate_episodes = (*selected_episodes, episode)
+        # Notes are spent from the ranked list in order, best first.
+        for item in retrieved_contextual:
+            candidate_items = [*selected_contextual, item]
             candidate = build_prompt(
                 [],
                 message,
                 thread.summary,
                 tuple(selected_facts),
-                candidate_episodes,
+                self._notes_of(candidate_items),
+                today=today,
             )
             candidate_tokens = count_tokens(candidate)
             if (
                 candidate_tokens > self.history_max_tokens
                 or candidate_tokens - base_tokens > memory_budget
             ):
-                # Do not skip a more relevant episode to admit a less relevant
-                # one. Retrieval order is part of the relevance guarantee.
+                # Do not skip a more relevant memory to admit a less relevant one.
+                # Retrieval order is part of the relevance guarantee.
                 break
-            selected_episodes.append(episode)
+            selected_contextual.append(item)
 
-        if len(selected_facts) < len(retrieved_facts) or len(selected_episodes) < len(
-            retrieved_episodes
+        selected_notes = self._notes_of(selected_contextual)
+
+        if len(selected_facts) < len(retrieved_facts) or len(selected_contextual) < len(
+            retrieved_contextual
         ):
             logger.info(
                 "Long-term memories dropped for token budget: thread=%s "
-                "facts=%s episodes=%s max_tokens=%s",
+                "facts=%s contextual=%s max_tokens=%s",
                 thread.id,
                 len(retrieved_facts) - len(selected_facts),
-                len(retrieved_episodes) - len(selected_episodes),
+                len(retrieved_contextual) - len(selected_contextual),
                 memory_budget,
             )
 
@@ -423,7 +435,8 @@ class ChatService:
             message,
             thread.summary,
             tuple(selected_facts),
-            tuple(selected_episodes),
+            selected_notes,
+            today=today,
         )
         required_tokens = count_tokens(required)
         history = await self.chat_message_repo.get_recent_messages(
@@ -447,7 +460,8 @@ class ChatService:
             message,
             thread.summary,
             tuple(selected_facts),
-            tuple(selected_episodes),
+            selected_notes,
+            today=today,
         )
         # Defensive final check: approximate token accounting is deterministic,
         # so no assembled prompt may exceed the configured total budget.
@@ -455,12 +469,22 @@ class ChatService:
             raise RuntimeError("Assembled chat prompt exceeded its token budget")
         return prompt
 
+    @staticmethod
+    def _notes_of(items: list[RetrievedMemory]) -> tuple[str, ...]:
+        """The note contents from a ranked contextual list, order preserved.
+
+        The contextual tier is notes only now, but the filter is kept explicit so
+        the prompt cannot accidentally be fed a non-note if the retrieval shape
+        ever changes again.
+        """
+        return tuple(item.content for item in items if item.kind == MEMORY_TYPE_NOTE)
+
     async def _retrieve_memories(
         self,
         *,
         user_id: str,
         query: str,
-    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    ) -> tuple[tuple[str, ...], tuple[RetrievedMemory, ...]]:
         """Best-effort retrieval shared by streaming and non-streaming chat."""
         try:
             return await self.memory_service.retrieve_for_prompt(
@@ -512,6 +536,18 @@ class ChatService:
             logger.warning(
                 "Could not update long-term memory: thread=%s user=%s",
                 thread.id,
+                user_id,
+                exc_info=True,
+            )
+
+        # Separately guarded, and deliberately after storing. Consolidation reads the
+        # set this turn just added to, and a failure to tidy must not discard the
+        # memory that was successfully written a moment ago.
+        try:
+            await self.memory_service.consolidate_if_needed(user_id=user_id)
+        except Exception:
+            logger.warning(
+                "Could not consolidate long-term memory: user=%s",
                 user_id,
                 exc_info=True,
             )

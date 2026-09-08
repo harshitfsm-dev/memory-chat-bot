@@ -103,11 +103,24 @@ export interface MessageResponse {
   created_at: string;
 }
 
+/** Closed routing dimension for notes. Null for facts and episodes. */
+export type MemoryCategory =
+  "goal" | "plan" | "event" | "project" | "constraint" | "interest" | "other";
+
 /** User-visible long-term memory returned by the backend management API. */
 export interface MemoryItemResponse {
   id: string;
+  /** Set on facts only. */
   memory_key: string | null;
+  /** Set on notes only. */
+  category: MemoryCategory | null;
+  /** Set on notes only: a few words naming the topic. */
+  subject: string | null;
   content: string;
+  /** When the remembered thing happens. Distinct from valid_until. */
+  event_at: string | null;
+  /** Set on notes in categories that lapse; null means it never expires. */
+  valid_until: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -115,4 +128,10 @@ export interface MemoryItemResponse {
 export interface UserMemoriesResponse {
   facts: MemoryItemResponse[];
   episodes: MemoryItemResponse[];
+  /**
+   * Free-text memories. Listed separately from episodes because this is the only
+   * group whose wording came from the conversation, so reviewing it is how a user
+   * catches something that should not have been stored.
+   */
+  notes: MemoryItemResponse[];
 }

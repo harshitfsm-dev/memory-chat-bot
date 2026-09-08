@@ -16,12 +16,34 @@ uv sync
 cp .env.example .env
 docker-compose up -d
 uv run alembic upgrade head
-ollama pull nomic-embed-text
+ollama pull qwen3-embedding:4b
 uv run uvicorn app.main:app --reload
 ```
 
-Also pull the chat and memory-extraction models configured in `.env`. Open
+Also pull the chat and memory-extraction models configured in `.env`. The chat
+model must support tools and must be able to turn thinking off; a reasoning-only
+model returns its answer in the thinking field and leaves the content empty. Open
 `http://127.0.0.1:8000/docs` for interactive API documentation.
+
+## Evaluating memory extraction
+
+```bash
+uv run python scripts/eval_memory_extraction.py
+```
+
+Extraction quality fails silently: a worse extractor does not raise or log, the
+assistant just quietly remembers the wrong things. This scores the pipeline against
+fixed expectations so that becomes visible. Run it before and after changing the
+extraction prompt, the extraction model, the note categories, or the storage
+filters — the absolute score matters less than whether it moved.
+
+Exits non-zero only for policy failures: a free-text note stored on a turn that
+must not be remembered, or an extractor that cannot produce parseable output at
+all. Ordinary misses fluctuate with the model and are reported, not enforced.
+
+Use `--repeat 3` before drawing conclusions. Extraction runs at temperature 0 but is
+not deterministic, and a single run can move several cases either way; the flag
+reports `FLAKY` for anything that is not consistent.
 
 ## Configuration
 
@@ -31,10 +53,11 @@ Also pull the chat and memory-extraction models configured in `.env`. Open
 | `JWT_SECRET_KEY`                   | Yes      | — (minimum 32 characters) |
 | `JWT_ALGORITHM`                    | No       | `HS256`                   |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES`  | No       | `30`                      |
-| `OLLAMA_AGENT_MODEL`               | No       | `deepseek-r1:14b`         |
-| `OLLAMA_SMALL_AGENT_MODEL`         | No       | `llama3.2:3b`             |
-| `OLLAMA_MEMORY_MODEL`              | No       | `llama3.2:3b`             |
-| `OLLAMA_EMBEDDING_MODEL`           | No       | `nomic-embed-text:latest` |
+| `OLLAMA_AGENT_MODEL`               | No       | `gemma4:12b-mlx`          |
+| `OLLAMA_AGENT_REASONING`           | No       | `false`                   |
+| `OLLAMA_SMALL_AGENT_MODEL`         | No       | `qwen3.5:2b-mlx`          |
+| `OLLAMA_MEMORY_MODEL`              | No       | `llama3.1:8b`             |
+| `OLLAMA_EMBEDDING_MODEL`           | No       | `qwen3-embedding:4b`      |
 | `OLLAMA_TEMPERATURE`               | No       | `0.7`                     |
 | `OLLAMA_TIMEOUT_SECONDS`           | No       | `30`                      |
 | `MEMORY_ENABLED`                   | No       | `true`                    |
@@ -43,9 +66,22 @@ Also pull the chat and memory-extraction models configured in `.env`. Open
 | `MEMORY_MAX_ITEMS_PER_TURN`        | No       | `6`                       |
 | `MEMORY_MIN_CONFIDENCE`            | No       | `0.7`                     |
 | `MEMORY_RETRIEVAL_ENABLED`         | No       | `true`                    |
-| `MEMORY_RETRIEVAL_MIN_SIMILARITY`  | No       | `0.7`                     |
+| `MEMORY_RETRIEVAL_MIN_SIMILARITY`  | No       | `0.6`                     |
 | `MEMORY_RETRIEVAL_MAX_EPISODES`    | No       | `3`                       |
+| `MEMORY_RETRIEVAL_MAX_NOTES`       | No       | `3`                       |
+| `MEMORY_RETRIEVAL_CANDIDATE_FACTOR`| No       | `5`                       |
+| `MEMORY_SCORE_SIMILARITY_WEIGHT`   | No       | `0.6`                     |
+| `MEMORY_SCORE_IMPORTANCE_WEIGHT`   | No       | `0.25`                    |
+| `MEMORY_SCORE_RECENCY_WEIGHT`      | No       | `0.15`                    |
+| `MEMORY_RECENCY_HALF_LIFE_DAYS`    | No       | `30`                      |
 | `MEMORY_RETRIEVAL_MAX_TOKENS`      | No       | `384`                     |
+| `MEMORY_NOTE_MAX_CHARS`            | No       | `200`                     |
+| `MEMORY_NOTE_DEDUPE_SIMILARITY`    | No       | `0.9`                     |
+| `MEMORY_EVENT_GRACE_DAYS`          | No       | `7`                       |
+| `MEMORY_CONSOLIDATION_ENABLED`     | No       | `true`                    |
+| `MEMORY_CONSOLIDATION_TRIGGER_NOTES` | No     | `20`                      |
+| `MEMORY_CONSOLIDATION_SIMILARITY`  | No       | `0.93`                    |
+| `MEMORY_MAX_ACTIVE_NOTES`          | No       | `100`                     |
 | `AGENT_TIMEOUT_SECONDS`            | No       | `90`                      |
 | `AGENT_MAX_CONCURRENCY`            | No       | `2`                       |
 | `AGENT_MAX_OUTPUT_TOKENS`          | No       | `4096`                    |
